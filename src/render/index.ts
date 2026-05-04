@@ -21,8 +21,10 @@ export class HtmlRenderer {
 			// Intra-deck hyperlinks (`#slide-N`) use this id as their target.
 			section.id = `slide-${slide.index}`;
 			applyBackground(section, slide);
+			const fieldCtx = { slide, firstSlideNum: presentation.firstSlideNum };
 			for (const shape of slide.shapes) {
-				section.appendChild(renderShapeLike(shape, options.className, embedUrls, presentation.tableStyles, slide.hyperlinkUrls));
+				const node = renderShapeLike(shape, options.className, embedUrls, presentation.tableStyles, slide.hyperlinkUrls, fieldCtx);
+				if (node) section.appendChild(node);
 			}
 			out.push(section);
 		}

@@ -23,7 +23,8 @@ function getAdj(av: Adj, name: string, fallback: number): number {
 	return v == null ? fallback : v;
 }
 
-const DEBUG = typeof process !== 'undefined' && !!(process as { env?: Record<string, string> }).env?.DEBUG_PPTXJS;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const DEBUG = typeof (globalThis as any).process !== 'undefined' && !!((globalThis as any).process as { env?: Record<string, string> }).env?.DEBUG_PPTXJS;
 
 /**
  * Convert an OOXML preset-geometry name + adjust-value list to an SVG `d`

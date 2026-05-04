@@ -2,7 +2,7 @@ import type { TableShape, TableCell, TableCellBorders } from '../presentation-pa
 import type { TableStyle, TableBandStyle, TableBorders } from '../table-style';
 import type { LineStyle, Fill } from '../fill';
 import { emuToPx, positionStyle, transformStyle } from './geom';
-import { renderParagraph, type AutoNumState } from './text';
+import { renderParagraph, type AutoNumState, type FieldContext } from './text';
 import { solidColorFromFill } from './fill-utils';
 
 // DrawingML <a:prstDash> values → CSS border-style. "solid" is the default
@@ -152,6 +152,7 @@ export function renderTable(
 	cls: string,
 	tableStyles: Map<string, TableStyle> | null,
 	hyperlinkUrls: Map<string, string>,
+	fieldCtx?: FieldContext,
 ): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-table`;
@@ -194,7 +195,7 @@ export function renderTable(
 			const band = style
 				? resolveBandForCell(style, t.tableFlags, rowIndex, rowCount, colIndex, colCount)
 				: null;
-			tr.appendChild(renderCell(cell, band, rowIndex, rowCount, colIndex, colCount, hyperlinkUrls));
+			tr.appendChild(renderCell(cell, band, rowIndex, rowCount, colIndex, colCount, hyperlinkUrls, fieldCtx));
 			colIndex += cell.gridSpan || 1;
 		}
 		table.appendChild(tr);
@@ -212,6 +213,7 @@ export function renderCell(
 	colIndex: number,
 	colCount: number,
 	hyperlinkUrls: Map<string, string>,
+	fieldCtx?: FieldContext,
 ): HTMLTableCellElement {
 	const td = document.createElement("td");
 
@@ -259,7 +261,7 @@ export function renderCell(
 
 	const autoNumState: AutoNumState = new Map();
 	for (const p of cell.paragraphs) {
-		td.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls));
+		td.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx));
 	}
 	return td;
 }

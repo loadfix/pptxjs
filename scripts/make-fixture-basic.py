@@ -386,6 +386,16 @@ chart_slide.shapes.add_chart(
     Inches(1), Inches(2), Inches(6), Inches(4),
     chart_data,
 )
+# Mark a trailing slide hidden to exercise the <p:sldId show="0"> filter.
+# python-pptx doesn't expose a `show` attr on Slide, so drop down to etree.
+hidden_slide = prs.slides.add_slide(prs.slide_layouts[5])
+hidden_slide.shapes.title.text = "Hidden slide"
+# Locate the matching <p:sldId> in the presentation part and stamp show="0".
+sldIdLst = prs.element.find(
+    "{http://schemas.openxmlformats.org/presentationml/2006/main}sldIdLst"
+)
+if sldIdLst is not None and len(sldIdLst) > 0:
+    sldIdLst[-1].set("show", "0")
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 prs.save(OUT)

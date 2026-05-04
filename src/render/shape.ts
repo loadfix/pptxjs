@@ -1,12 +1,18 @@
 import type { Shape } from '../presentation-parser';
 import type { ShapeEffects, OuterShadow, InnerShadow, Glow, SoftEdge, Reflection, Blur } from '../effects';
 import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
-import { renderParagraph, type AutoNumState } from './text';
+import { renderParagraph, type AutoNumState, type FieldContext } from './text';
 import { solidColorFromFill, fillToCssBackground } from './fill-utils';
 import { presetToSvgPath } from '../preset-geom';
 import { wrapInHyperlink } from './hyperlink';
 
-export function renderShape(shape: Shape, cls: string, embedUrls: Map<string, string>, hyperlinkUrls: Map<string, string>): HTMLElement {
+export function renderShape(
+	shape: Shape,
+	cls: string,
+	embedUrls: Map<string, string>,
+	hyperlinkUrls: Map<string, string>,
+	fieldCtx?: FieldContext,
+): HTMLElement {
 	const el = document.createElement("div");
 	el.className = `${cls}-shape`;
 	Object.assign(el.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
@@ -34,7 +40,7 @@ export function renderShape(shape: Shape, cls: string, embedUrls: Map<string, st
 
 	const autoNumState: AutoNumState = new Map();
 	for (const p of shape.paragraphs) {
-		el.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls));
+		el.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx));
 	}
 	// Whole-shape click-action: wrap the positioned box in an <a>. The anchor
 	// inherits the shape's position so the hit area is the shape itself.

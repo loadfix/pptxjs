@@ -8,6 +8,9 @@ export interface Options {
 	debug: boolean;
 	trimXmlDeclaration: boolean;
 	useBase64URL: boolean;
+	// Include slides that PowerPoint has marked hidden (<p:sldId show="0">).
+	// Default false — hidden slides are dropped from the render list.
+	showHidden: boolean;
 }
 
 export const defaultOptions: Options = {
@@ -16,6 +19,7 @@ export const defaultOptions: Options = {
 	debug: false,
 	trimXmlDeclaration: true,
 	useBase64URL: false,
+	showHidden: false,
 };
 
 function mergeOptions(userOptions?: Partial<Options>): Options {
