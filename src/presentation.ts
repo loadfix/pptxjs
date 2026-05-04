@@ -33,6 +33,8 @@ import {
 } from './theme';
 import { parseSlideBackground } from './background';
 import { loadTableStyles, TableStyle } from './table-style';
+import { loadNotesSlide } from './notes';
+import { loadCommentAuthors, loadComments } from './comments';
 import { A_NS } from './namespaces';
 
 const LAYOUT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
@@ -220,6 +222,11 @@ export class Presentation {
 			};
 		}
 
+		// Author map for <p:cm authorId="…"> lookups. Loaded once up-front —
+		// the part either exists (presentation has comments somewhere) or it
+		// doesn't, and loadCommentAuthors degrades to an empty map either way.
+		const commentAuthors = await loadCommentAuthors(pkg);
+
 		// Cache image URLs across slides — the same embedded image may be
 		// referenced by multiple slides via separate rIds, but there's one
 		// media entry per unique file.
@@ -357,6 +364,11 @@ export class Presentation {
 				parseSlideBackground(doc, master.clrMap, master.theme)
 				?? (layout.doc ? parseSlideBackground(layout.doc, master.clrMap, master.theme) : null)
 				?? (master.doc ? parseSlideBackground(master.doc, master.clrMap, master.theme) : null);
+
+			// Notes + comments — pulled from the slide's own rels. Both are
+			// optional parts; loaders return null / [] when absent.
+			slide.notes = await loadNotesSlide(pkg, path);
+			slide.comments = await loadComments(pkg, path, commentAuthors);
 			pres.slides.push(slide);
 		}
 

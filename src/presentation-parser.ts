@@ -46,6 +46,12 @@ export interface Slide {
 	footerText: string | null;
 	headerText: string | null;
 	datetimeText: string | null;
+	// Speaker notes from the associated notesSlide part, or null when the
+	// slide has none. Populated by Presentation.load after parseSlide runs.
+	notes: import('./notes').NotesSlide | null;
+	// Review comments on this slide. Always an array — empty when the slide
+	// has no comments part.
+	comments: import('./comments').Comment[];
 }
 
 export interface HeaderFooterFlags {
@@ -443,6 +449,8 @@ export function parseSlide(doc: Document, index: number, ctx: SlideParseContext)
 		footerText: phText.ftr,
 		headerText: phText.hdr,
 		datetimeText: phText.dt,
+		notes: null,
+		comments: [],
 	};
 }
 

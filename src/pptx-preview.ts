@@ -11,6 +11,14 @@ export interface Options {
 	// Include slides that PowerPoint has marked hidden (<p:sldId show="0">).
 	// Default false — hidden slides are dropped from the render list.
 	showHidden: boolean;
+	// When true, append a `.pptx-notes` div beneath each slide section
+	// containing the speaker-notes text. Default false — notes are metadata
+	// on the Presentation model and don't render unless explicitly asked for.
+	renderNotes: boolean;
+	// When true, render each slide's comments as absolutely-positioned pin
+	// markers at the comment's (x,y) with hover tooltips showing the author
+	// and body. Default false for the same reason as renderNotes.
+	renderComments: boolean;
 }
 
 export const defaultOptions: Options = {
@@ -20,6 +28,8 @@ export const defaultOptions: Options = {
 	trimXmlDeclaration: true,
 	useBase64URL: false,
 	showHidden: false,
+	renderNotes: false,
+	renderComments: false,
 };
 
 function mergeOptions(userOptions?: Partial<Options>): Options {

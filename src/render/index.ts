@@ -4,6 +4,7 @@ import { emuToPx } from './geom';
 import { makeStyleNode } from './style';
 import { applyBackground } from './background';
 import { renderShapeLike } from './dispatch';
+import { renderNotesBlock, renderCommentMarkers } from './notes';
 
 export class HtmlRenderer {
 	async render(presentation: Presentation, options: Options): Promise<Node[]> {
@@ -26,7 +27,15 @@ export class HtmlRenderer {
 				const node = renderShapeLike(shape, options.className, embedUrls, presentation.tableStyles, slide.hyperlinkUrls, fieldCtx);
 				if (node) section.appendChild(node);
 			}
+			if (options.renderComments) {
+				const markers = renderCommentMarkers(slide, options.className);
+				if (markers) section.appendChild(markers);
+			}
 			out.push(section);
+			if (options.renderNotes) {
+				const notesEl = renderNotesBlock(slide, options.className);
+				if (notesEl) out.push(notesEl);
+			}
 		}
 
 		return out;
