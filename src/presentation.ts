@@ -4,6 +4,7 @@ import { imageMimeFromPath } from './mime';
 import {
 	parseSlide,
 	parseStaticShapes,
+	parseShapesFromSpTree,
 	Slide,
 	SlideSize,
 	ShapeLike,
@@ -13,7 +14,14 @@ import {
 	parseMasterTextStyles,
 	PlaceholderMap,
 	MasterTextStyles,
+	SlideParseContext,
 } from './presentation-parser';
+import {
+	CHART_REL_TYPE,
+	findChartFallbackImage,
+	findSmartArtDrawingDoc,
+	parseSmartArtShapesFromDoc,
+} from './graphic-frame';
 import {
 	ThemeColors,
 	ClrMap,
@@ -235,8 +243,17 @@ export class Presentation {
 			}
 
 			const slideEmbeds = await embedsFor(path);
-			const slide = parseSlide(doc, i, { ...baseCtx, embedUrls: slideEmbeds });
+			const slideCtx: SlideParseContext = { ...baseCtx, embedUrls: slideEmbeds };
+			const slide = parseSlide(doc, i, slideCtx);
 			rewriteBlipRIds(slide.shapes, slideEmbeds, path, pres.embedUrls);
+
+			// Resolve chart / SmartArt fallback shapes now that we have
+			// access to the package and the slide's rels.
+			const slideRels = await pkg.loadRelationships(path);
+			slide.shapes = await resolveGraphicFrameFallbacks(
+				pkg, path, slideRels, slide.shapes, slideCtx, mediaUrlCache,
+			);
+
 			// Prepend static chrome so slide content renders on top.
 			slide.shapes = [...staticShapes, ...slide.shapes];
 
@@ -255,8 +272,7 @@ export class Presentation {
 // Walk the parsed shapes from a single part (slide/layout/master) and, for
 // every BlipFill carrying a rId resolvable via `partEmbeds`, rewrite the
 // rId to a globally unique synthetic key and register the corresponding
-// URL in `outMap`. This lets the renderer consult one merged map without
-// caring which part a given rId came from.
+// URL in `outMap`.
 function rewriteBlipRIds(
 	shapes: ShapeLike[],
 	partEmbeds: Map<string, string>,
@@ -274,4 +290,50 @@ function rewriteBlipRIds(
 			}
 		}
 	}
+}
+
+// Walk the slide's shapes after the element-tree parse, filling in chart
+// cached images and expanding SmartArt frames into their pre-rendered drawings.
+async function resolveGraphicFrameFallbacks(
+	pkg: OpenXmlPackage,
+	slidePath: string,
+	slideRels: Map<string, import('./open-xml-package').Relationship>,
+	shapes: ShapeLike[],
+	ctx: SlideParseContext,
+	mediaUrlCache: Map<string, string>,
+): Promise<ShapeLike[]> {
+	const out: ShapeLike[] = [];
+	for (const s of shapes) {
+		if (s.kind === 'chart-fallback') {
+			if (s.chartRId) {
+				const rel = slideRels.get(s.chartRId);
+				if (rel && rel.type === CHART_REL_TYPE) {
+					const chartPath = resolveRelTarget(slidePath, rel.target);
+					s.src = await findChartFallbackImage(pkg, chartPath, mediaUrlCache);
+				}
+			}
+			out.push(s);
+			continue;
+		}
+		if (s.kind === 'smartart-fallback') {
+			if (s.dataRId) {
+				const drawingDoc = await findSmartArtDrawingDoc(pkg, slidePath, slideRels, s.dataRId);
+				if (drawingDoc) {
+					const expanded = parseSmartArtShapesFromDoc(drawingDoc, ctx, parseShapesFromSpTree);
+					if (expanded.length > 0) {
+						for (const ex of expanded) {
+							ex.x += s.x;
+							ex.y += s.y;
+						}
+						out.push(...expanded);
+						continue;
+					}
+				}
+			}
+			out.push(s);
+			continue;
+		}
+		out.push(s);
+	}
+	return out;
 }

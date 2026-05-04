@@ -3,7 +3,9 @@ from pathlib import Path
 
 from lxml import etree
 from pptx import Presentation
+from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
+from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
@@ -370,6 +372,20 @@ lnSpc = etree.SubElement(pPr, qn("a:lnSpc"))
 etree.SubElement(lnSpc, qn("a:spcPct")).set("val", "150000")
 # Re-order: lnSpc must appear before other children per the schema; since this
 # is a fresh pPr the order will be correct.
+# Slide with a chart — exercises the chart graphicFrame fallback path.
+# python-pptx doesn't emit a cached preview image, so rendering is expected
+# to show the "[Chart]" placeholder; the point of the fixture is to
+# confirm the frame is detected rather than silently dropped.
+chart_slide = prs.slides.add_slide(prs.slide_layouts[5])
+chart_slide.shapes.title.text = "A chart"
+chart_data = CategoryChartData()
+chart_data.categories = ["A", "B", "C"]
+chart_data.add_series("Series 1", (1, 2, 3))
+chart_slide.shapes.add_chart(
+    XL_CHART_TYPE.COLUMN_CLUSTERED,
+    Inches(1), Inches(2), Inches(6), Inches(4),
+    chart_data,
+)
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 prs.save(OUT)
