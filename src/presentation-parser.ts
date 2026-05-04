@@ -113,6 +113,10 @@ export interface Shape {
 	// Custom geometry (<a:custGeom>), if any. Null for preset/no geometry.
 	// When present, the renderer produces an SVG path instead of a plain box.
 	custGeom: CustGeom | null;
+	// Preset geometry (<a:prstGeom prst="…">), if any. custGeom takes precedence
+	// when both are set. `avLst` captures the shape's <a:gd> adjust values
+	// (e.g. adj1 → 15000) used to parameterise the preset silhouette.
+	presetGeom: { name: string; avLst: Map<string, number> } | null;
 	// Accessibility / descriptive metadata. Null when the PPTX didn't set it.
 	name: string | null;
 	title: string | null;
@@ -594,11 +598,12 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 	}
 	const line = parseLine(spPr ? firstChildNS(spPr, A_NS.a, "ln") : null, ctx.clrMap, ctx.theme);
 	const custGeom = spPr ? parseCustGeom(firstChildNS(spPr, A_NS.a, "custGeom")) : null;
+	const presetGeom = spPr ? parsePresetGeom(firstChildNS(spPr, A_NS.a, "prstGeom")) : null;
 
 	const nv = parseNonVisualProps(nvSpPr);
 	const hyperlinkRId = hyperlinkFromCNvPr(nvSpPr);
 
-	if (!frame && paragraphs.length === 0 && !fill && !line && !custGeom) return null;
+	if (!frame && paragraphs.length === 0 && !fill && !line && !custGeom && !presetGeom) return null;
 	return {
 		kind: 'shape',
 		x: frame?.x ?? 0,
@@ -609,6 +614,7 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 		line,
 		paragraphs,
 		custGeom,
+		presetGeom,
 		name: nv.name,
 		title: nv.title,
 		alt: nv.descr,
@@ -666,6 +672,30 @@ function parseCustGeom(custGeom: Element | null): CustGeom | null {
 	}
 	if (!d) return null;
 	return { pathW, pathH, d: d.trim(), closed };
+}
+
+// Parse <a:prstGeom prst="…"> with its optional <a:avLst> of adjust values.
+// Each <a:gd name="adjN" fmla="val 12345"/> contributes adjN → 12345 (EMU-free,
+// per-100000 units). fmla values not of the simple "val N" form are ignored.
+function parsePresetGeom(prstGeom: Element | null): { name: string; avLst: Map<string, number> } | null {
+	if (!prstGeom) return null;
+	const name = prstGeom.getAttribute("prst");
+	if (!name) return null;
+	const avLst = new Map<string, number>();
+	const avLstEl = firstChildNS(prstGeom, A_NS.a, "avLst");
+	if (avLstEl) {
+		for (const gd of childrenNS(avLstEl, A_NS.a, "gd")) {
+			const gdName = gd.getAttribute("name");
+			const fmla = gd.getAttribute("fmla");
+			if (!gdName || !fmla) continue;
+			// We only handle "val N" formulas (the common case). Anything else
+			// — "*/ a b c", "pin 0 X Y" etc. — is left unset so presetToSvgPath
+			// falls back to its default.
+			const m = /^val\s+(-?\d+(?:\.\d+)?)$/.exec(fmla.trim());
+			if (m) avLst.set(gdName, Number(m[1]));
+		}
+	}
+	return { name, avLst };
 }
 
 function readXfrm(spPr: Element | null): PlaceholderFrame | null {

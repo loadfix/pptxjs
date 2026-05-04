@@ -61,6 +61,26 @@ bordered.line.color.rgb = RGBColor(0xC0, 0x50, 0x4D)
 bordered.line.width = Emu(19050)  # 1.5 pt
 bordered.text_frame.text = "Border only"
 
+# Preset-geometry showcase — exercises prstGeom rendering.
+preset_slide = prs.slides.add_slide(prs.slide_layouts[5])
+preset_slide.shapes.title.text = "Preset shapes"
+# Lay shapes out on a 3x2 grid of ~2" cells.
+presets = [
+    (MSO_SHAPE.ROUNDED_RECTANGLE, 0, 0),
+    (MSO_SHAPE.DIAMOND, 1, 0),
+    (MSO_SHAPE.OVAL, 2, 0),
+    (MSO_SHAPE.UP_ARROW, 0, 1),
+    (MSO_SHAPE.STAR_5_POINT, 1, 1),
+    (MSO_SHAPE.PENTAGON, 2, 1),
+]
+for shape_enum, col, row in presets:
+    left = Inches(0.75 + col * 2.5)
+    top = Inches(1.8 + row * 2)
+    s = preset_slide.shapes.add_shape(shape_enum, left, top, Inches(2), Inches(1.5))
+    s.fill.solid()
+    s.fill.fore_color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+    s.line.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
+
 # Slide with a table.
 table_slide = prs.slides.add_slide(prs.slide_layouts[5])
 table_slide.shapes.title.text = "A table"
