@@ -105,6 +105,21 @@ function toHex(n: number): string {
 	return n.toString(16).padStart(2, "0");
 }
 
+// custGeom path `fill="darken"` — one luminance step darker than the base
+// color, matching PowerPoint's interpretation (equivalent to <a:lumMod
+// val="75000"/>). Used when a path inside a custGeom wants to render in a
+// shaded variant of the shape's own fill.
+export function darken(hex: string): string {
+	return applyMods(hex, { ops: [{ kind: 'lumMod', v: 0.75 }] });
+}
+
+// custGeom path `fill="lighten"` — one luminance step lighter than the base
+// color (equivalent to <a:lumMod val="75000"/><a:lumOff val="25000"/>, i.e.
+// l' = l * 0.75 + 0.25). Mirrors PowerPoint's "1-step lighter" behaviour.
+export function lighten(hex: string): string {
+	return applyMods(hex, { ops: [{ kind: 'lumMod', v: 0.75 }, { kind: 'lumOff', v: 0.25 }] });
+}
+
 // Compose a CSS color that carries the given alpha (0..1). Input is a
 // `#RRGGBB` hex color (any other form, including an already-alpha'd value,
 // is returned unchanged). Output is `#RRGGBBAA` — CSS Color Level 4 8-hex,
