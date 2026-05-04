@@ -88,7 +88,10 @@ function cartesian<T>(axes: T[][]): T[][] {
 // digits, and underscores, starting with a letter. Strict enough to
 // avoid eating legitimate `{0}` positional-style tokens while matching
 // the Python reference's regex character class exactly.
-const PLACEHOLDER = /\{([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\}/g;
+// Field portion accepts [A-Za-z][A-Za-z0-9_]* to handle camelCase
+// OOXML attribute names (e.g. `themeTint`, `numFmtId`). Must match
+// the Python reference in ooxml-validate's conformance.py.
+const PLACEHOLDER = /\{([a-z][a-z0-9_]*)\.([A-Za-z][A-Za-z0-9_]*)\}/g;
 
 function substituteString(
   text: string,
