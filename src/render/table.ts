@@ -1,11 +1,12 @@
 import type { TableShape, TableCell } from '../presentation-parser';
-import { emuToPx, positionStyle } from './geom';
+import { emuToPx, positionStyle, transformStyle } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
 
 export function renderTable(t: TableShape, cls: string): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-table`;
 	Object.assign(wrap.style, positionStyle(t.x, t.y, t.cx, t.cy));
+	Object.assign(wrap.style, transformStyle(t.rotation60k, t.flipH, t.flipV));
 
 	const table = document.createElement("table");
 	Object.assign(table.style, {
