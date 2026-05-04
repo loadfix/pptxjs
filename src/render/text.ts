@@ -285,7 +285,8 @@ function applyRunStyle(el: HTMLElement, s: TextRun['style']): void {
 		el.style.fontKerning = "normal";
 	}
 
-	// Language attribute (not a style).
+	// Language attribute (not a style). <a:rPr lang=...> is exposed on the
+	// rendered span so screen readers can pick the right pronunciation.
 	if (s.lang) {
 		el.setAttribute("lang", s.lang);
 	}

@@ -18,6 +18,15 @@ export function renderShape(
 	Object.assign(el.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
 	Object.assign(el.style, transformStyle(shape.rotation60k, shape.flipH, shape.flipV));
 
+	// Accessibility: prefer `title` (human-authored title text) for aria-label;
+	// fall back to `alt` (from <p:cNvPr descr=>). Skip entirely when neither is
+	// set so we don't emit empty ARIA attributes that hurt screen-reader UX.
+	const ariaLabel = shape.title || shape.alt;
+	if (ariaLabel) {
+		el.setAttribute("aria-label", ariaLabel);
+		el.setAttribute("role", "figure");
+	}
+
 	// A degenerate "line" (zero cx or cy) can't render a path in zero area,
 	// so fall back to the background-band treatment even if custGeom is set.
 	const isDegenerateLine = shape.cx === 0 || shape.cy === 0;
