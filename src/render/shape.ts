@@ -1,10 +1,19 @@
 import type { Shape } from '../presentation-parser';
+import type { BodyProperties } from '../text-style';
 import type { ShapeEffects, OuterShadow, InnerShadow, Glow, SoftEdge, Reflection, Blur } from '../effects';
 import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
-import { renderParagraph, type AutoNumState, type FieldContext } from './text';
+import { renderParagraph, type AutoNumState, type BodyTextContext, type FieldContext } from './text';
 import { solidColorFromFill, fillToCssBackground } from './fill-utils';
 import { presetToSvgPath } from '../preset-geom';
 import { wrapInHyperlink } from './hyperlink';
+
+// PowerPoint's default text-frame insets (EMU). Match the values PowerPoint
+// uses when <a:bodyPr> omits lIns/tIns/rIns/bIns: 0.1" horizontal, 0.05"
+// vertical.
+const DEFAULT_L_INS_EMU = 91440;
+const DEFAULT_R_INS_EMU = 91440;
+const DEFAULT_T_INS_EMU = 45720;
+const DEFAULT_B_INS_EMU = 45720;
 
 export function renderShape(
 	shape: Shape,
@@ -47,9 +56,8 @@ export function renderShape(
 
 	if (shape.effects) applyEffects(el, shape.effects);
 
-	const autoNumState: AutoNumState = new Map();
-	for (const p of shape.paragraphs) {
-		el.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx));
+	if (shape.paragraphs.length > 0) {
+		el.appendChild(renderTextBody(shape, hyperlinkUrls, fieldCtx));
 	}
 	// Whole-shape click-action: wrap the positioned box in an <a>. The anchor
 	// inherits the shape's position so the hit area is the shape itself.
@@ -75,6 +83,96 @@ export function renderShape(
 		return wrapped;
 	}
 	return el;
+}
+
+// Build the text-body wrapper <div> for a shape: applies <a:bodyPr> insets,
+// vertical anchor, wrap, column count, writing-mode, then renders each
+// paragraph inside. Autofit's fontScale / lnSpcReduction ride along via
+// `BodyTextContext` so every run picks them up uniformly. Returns a single
+// element positioned absolutely over the shape (so it stacks above any
+// SVG-drawn geometry).
+function renderTextBody(
+	shape: Shape,
+	hyperlinkUrls: Map<string, string>,
+	fieldCtx?: FieldContext,
+): HTMLElement {
+	const bp: BodyProperties | null = shape.bodyPr;
+
+	const wrap = document.createElement("div");
+	// Fill the shape box; absolute so it sits above background SVG/preset.
+	Object.assign(wrap.style, {
+		position: "absolute",
+		left: "0",
+		top: "0",
+		width: "100%",
+		height: "100%",
+		boxSizing: "border-box",
+	} as Partial<CSSStyleDeclaration>);
+
+	// Insets → padding. Apply PowerPoint defaults when an attribute is unset.
+	const lIns = bp?.lInsEmu ?? DEFAULT_L_INS_EMU;
+	const tIns = bp?.tInsEmu ?? DEFAULT_T_INS_EMU;
+	const rIns = bp?.rInsEmu ?? DEFAULT_R_INS_EMU;
+	const bIns = bp?.bInsEmu ?? DEFAULT_B_INS_EMU;
+	wrap.style.padding =
+		`${emuToPx(tIns)}px ${emuToPx(rIns)}px ${emuToPx(bIns)}px ${emuToPx(lIns)}px`;
+
+	// Vertical anchor → flexbox justify-content on a column flex container.
+	// anchor=t (or unset) pins to the top; ctr centers; b pins to bottom.
+	// 'just'/'dist' are approximated as top — distributing paragraphs evenly
+	// is not something CSS does well without per-line hooks.
+	wrap.style.display = "flex";
+	wrap.style.flexDirection = "column";
+	switch (bp?.anchor) {
+		case 'ctr': wrap.style.justifyContent = "center"; break;
+		case 'b': wrap.style.justifyContent = "flex-end"; break;
+		default: wrap.style.justifyContent = "flex-start"; break;
+	}
+
+	// wrap="none" disables wrapping; default (square) allows normal wrapping.
+	if (bp?.wrap === 'none') {
+		wrap.style.whiteSpace = "pre";
+	}
+
+	// Multi-column text frames — <a:bodyPr numCol="2" spcCol="N">.
+	if (bp?.numCol != null && bp.numCol > 1) {
+		wrap.style.columnCount = String(bp.numCol);
+		if (bp.spcColEmu != null) {
+			wrap.style.columnGap = `${emuToPx(bp.spcColEmu)}px`;
+		}
+	}
+
+	// Vertical writing-mode. `vert270` wants bottom-up vertical text which CSS
+	// expresses as sideways-lr; older browsers ignore that keyword and fall
+	// back to vertical-rl (top-down), which is still readable. mongolianVert
+	// and the wordArt* variants are uncommon and left as TODO.
+	switch (bp?.vert) {
+		case 'vert':
+		case 'eaVert':
+			wrap.style.writingMode = "vertical-rl";
+			break;
+		case 'vert270':
+			wrap.style.writingMode = "sideways-lr";
+			break;
+		// TODO: mongolianVert, wordArtVert, wordArtVertRtl.
+	}
+
+	// Autofit — normAutofit shrinks every run's font-size and (optionally)
+	// line-height uniformly. Threaded into renderParagraph so per-run pt
+	// values multiply without CSS custom-property gymnastics.
+	let bodyCtx: BodyTextContext | undefined;
+	if (bp?.autofit?.kind === 'normAutofit') {
+		bodyCtx = {
+			fontScale: bp.autofit.fontScale,
+			lnSpcReduction: bp.autofit.lnSpcReduction,
+		};
+	}
+
+	const autoNumState: AutoNumState = new Map();
+	for (const p of shape.paragraphs) {
+		wrap.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx));
+	}
+	return wrap;
 }
 
 // Emit the fill / border as CSS on the shape's <div> (legacy path for shapes
