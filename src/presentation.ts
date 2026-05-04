@@ -30,8 +30,9 @@ import {
 	emptyClrMap,
 	parseTheme,
 	parseClrMap,
+	parseClrMapOvr,
 } from './theme';
-import { parseSlideBackground } from './background';
+import { parseSlideBackground, ParsedSlideBackground, BackgroundFill } from './background';
 import { loadTableStyles, TableStyle } from './table-style';
 import { loadNotesSlide } from './notes';
 import { loadCommentAuthors, loadComments } from './comments';
@@ -74,6 +75,10 @@ interface MasterBundle {
 interface LayoutBundle {
 	placeholders: PlaceholderMap;
 	doc: Document | null;
+	// <p:clrMapOvr><a:overrideClrMapping .../></p:clrMapOvr> on the layout,
+	// or null when the layout inherits the master's map (either because the
+	// element is absent or because it holds <a:masterClrMapping/>).
+	clrMapOvr: ClrMap | null;
 }
 
 export class Presentation {
@@ -154,7 +159,7 @@ export class Presentation {
 				path: null,
 				doc: null,
 			};
-			const emptyLayout: LayoutBundle = { placeholders: emptyPlaceholderMap(), doc: null };
+			const emptyLayout: LayoutBundle = { placeholders: emptyPlaceholderMap(), doc: null, clrMapOvr: null };
 
 			const slideRels = await pkg.loadRelationships(slidePath);
 			let layoutPath: string | null = null;
@@ -172,6 +177,7 @@ export class Presentation {
 				layoutBundle = {
 					placeholders: layoutDoc ? buildPlaceholderMap(layoutDoc) : emptyPlaceholderMap(),
 					doc: layoutDoc,
+					clrMapOvr: layoutDoc ? parseClrMapOvr(layoutDoc) : null,
 				};
 				layoutCache.set(layoutPath, layoutBundle);
 
@@ -296,11 +302,29 @@ export class Presentation {
 			return out;
 		}
 
+		// Presentation.load walks each slide's layout → master independently
+		// (no assumption of a single shared master), so multi-master decks
+		// render correctly: every slide pulls the theme/clrMap/textStyles of
+		// its own master chain. The caches below are keyed by part path, so
+		// distinct masters produce distinct MasterBundles.
+		//
+		// Caveat: `pres.tableStyles` remains global because the tableStyles
+		// part (ppt/tableStyles.xml) is declared at the presentation level,
+		// not per-master. Decks that somehow rely on per-master table style
+		// variation are not supported — all tables share the same style table.
 		for (let i = 0; i < slidePaths.length; i++) {
 			const path = slidePaths[i];
 			const doc = await pkg.loadXml(path);
 			if (!doc) continue;
 			const { layout, master, layoutPath, masterPath } = await getLayoutAndMaster(path);
+
+			// Effective clrMap cascade: slide.clrMapOvr ?? layout.clrMapOvr ??
+			// master.clrMap. Scheme-color lookups inside this slide's content
+			// use this map; master/layout chrome uses its own effective map
+			// (layout = layout.clrMapOvr ?? master; master = master.clrMap).
+			const slideClrMapOvr = parseClrMapOvr(doc);
+			const effectiveClrMap: ClrMap = slideClrMapOvr ?? layout.clrMapOvr ?? master.clrMap;
+			const layoutClrMap: ClrMap = layout.clrMapOvr ?? master.clrMap;
 
 			// Shared parse context (clrMap/theme/etc.) that also needs the
 			// correct embedUrls for whichever part is being parsed.
@@ -309,21 +333,26 @@ export class Presentation {
 				master: master.placeholders,
 				masterTextStyles: master.textStyles,
 				theme: master.theme,
-				clrMap: master.clrMap,
+				clrMap: effectiveClrMap,
 			};
 
 			// Static chrome from master → layout, parsed with their own embeds
-			// so images stored at the master/layout level resolve.
+			// so images stored at the master/layout level resolve. Each level
+			// parses with the clrMap that applies to it, not the slide's.
 			const staticShapes: ReturnType<typeof parseStaticShapes> = [];
 			if (master.doc && masterPath) {
 				const masterEmbeds = await embedsFor(masterPath);
-				const shapes = parseStaticShapes(master.doc, { ...baseCtx, embedUrls: masterEmbeds });
+				const shapes = parseStaticShapes(master.doc, {
+					...baseCtx, embedUrls: masterEmbeds, clrMap: master.clrMap,
+				});
 				rewriteBlipRIds(shapes, masterEmbeds, masterPath, pres.embedUrls);
 				staticShapes.push(...shapes);
 			}
 			if (layout.doc && layoutPath) {
 				const layoutEmbeds = await embedsFor(layoutPath);
-				const shapes = parseStaticShapes(layout.doc, { ...baseCtx, embedUrls: layoutEmbeds });
+				const shapes = parseStaticShapes(layout.doc, {
+					...baseCtx, embedUrls: layoutEmbeds, clrMap: layoutClrMap,
+				});
 				rewriteBlipRIds(shapes, layoutEmbeds, layoutPath, pres.embedUrls);
 				staticShapes.push(...shapes);
 			}
@@ -359,11 +388,17 @@ export class Presentation {
 			// a fresh empty map.
 			slide.hyperlinkUrls = await loadSlideHyperlinks(path, i);
 
-			// Background cascade: slide → layout → master. First hit wins.
-			slide.background =
-				parseSlideBackground(doc, master.clrMap, master.theme)
-				?? (layout.doc ? parseSlideBackground(layout.doc, master.clrMap, master.theme) : null)
-				?? (master.doc ? parseSlideBackground(master.doc, master.clrMap, master.theme) : null);
+			// Background cascade: slide → layout → master. First concrete hit
+			// wins. parseSlideBackground returns 'inherit' when a part carries
+			// an explicit <p:bgRef idx=0|1000/> (ECMA-376: "no fill / show
+			// through") — that's an intentional declaration meaning "defer to
+			// the next level up", distinct from "no <p:bg> declared" (null).
+			// Both null and 'inherit' fall through to the next cascade level.
+			slide.background = resolveBackgroundCascade(
+				parseSlideBackground(doc, effectiveClrMap, master.theme),
+				layout.doc ? parseSlideBackground(layout.doc, layoutClrMap, master.theme) : null,
+				master.doc ? parseSlideBackground(master.doc, master.clrMap, master.theme) : null,
+			);
 
 			// Notes + comments — pulled from the slide's own rels. Both are
 			// optional parts; loaders return null / [] when absent.
@@ -374,6 +409,21 @@ export class Presentation {
 
 		return pres;
 	}
+}
+
+// Reduce the slide → layout → master background cascade down to a concrete
+// fill or null. Each input is the result of parseSlideBackground for that
+// level: a BackgroundFill (stop here), 'inherit' (explicit skip — look at
+// the next level), or null (level said nothing — also look at the next).
+function resolveBackgroundCascade(
+	slide: ParsedSlideBackground,
+	layout: ParsedSlideBackground,
+	master: ParsedSlideBackground,
+): BackgroundFill | null {
+	for (const level of [slide, layout, master]) {
+		if (level && level !== 'inherit') return level;
+	}
+	return null;
 }
 
 // Walk the parsed shapes from a single part (slide/layout/master) and, for
