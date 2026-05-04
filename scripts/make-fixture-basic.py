@@ -258,6 +258,109 @@ duotone_el = etree.SubElement(_blip(duo._element), _a("duotone"))
 _sub(duotone_el, "srgbClr", val="1F3A93")
 _sub(duotone_el, "srgbClr", val="FFD9B3")
 
+# Slide exercising <a:custGeom> with arcTo + multi-path + fill="none".
+# python-pptx doesn't have a high-level API for custGeom, so we splice raw
+# OOXML onto rectangle shapes' spPr.
+custgeom_slide = prs.slides.add_slide(prs.slide_layouts[5])
+custgeom_slide.shapes.title.text = "Custom geometry"
+
+
+def _replace_geom(shape, custgeom_xml):
+    """Swap out <a:prstGeom>/<a:custGeom> on a shape for the given XML."""
+    spPr = shape._element.spPr
+    for tag in ("a:prstGeom", "a:custGeom"):
+        for el in spPr.findall(qn(tag)):
+            spPr.remove(el)
+    spPr.append(etree.fromstring(custgeom_xml))
+
+
+# 1) Pie slice — uses arcTo to draw a 90° wedge.
+pie = custgeom_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(0.75), Inches(2), Inches(2), Inches(2)
+)
+pie.fill.solid()
+pie.fill.fore_color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+_replace_geom(
+    pie,
+    """<a:custGeom xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'>
+  <a:avLst/>
+  <a:gdLst/>
+  <a:ahLst/>
+  <a:cxnLst/>
+  <a:rect l='0' t='0' r='0' b='0'/>
+  <a:pathLst>
+    <a:path w='100000' h='100000'>
+      <a:moveTo><a:pt x='50000' y='50000'/></a:moveTo>
+      <a:lnTo><a:pt x='100000' y='50000'/></a:lnTo>
+      <a:arcTo wR='50000' hR='50000' stAng='0' swAng='5400000'/>
+      <a:close/>
+    </a:path>
+  </a:pathLst>
+</a:custGeom>""",
+)
+
+# 2) Multi-path: outer diamond + inner diamond, both as separate <a:path>.
+multi = custgeom_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(3.25), Inches(2), Inches(2), Inches(2)
+)
+multi.fill.solid()
+multi.fill.fore_color.rgb = RGBColor(0xC0, 0x50, 0x4D)
+_replace_geom(
+    multi,
+    """<a:custGeom xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'>
+  <a:avLst/>
+  <a:gdLst/>
+  <a:ahLst/>
+  <a:cxnLst/>
+  <a:rect l='0' t='0' r='0' b='0'/>
+  <a:pathLst>
+    <a:path w='100000' h='100000'>
+      <a:moveTo><a:pt x='50000' y='0'/></a:moveTo>
+      <a:lnTo><a:pt x='100000' y='50000'/></a:lnTo>
+      <a:lnTo><a:pt x='50000' y='100000'/></a:lnTo>
+      <a:lnTo><a:pt x='0' y='50000'/></a:lnTo>
+      <a:close/>
+    </a:path>
+    <a:path w='100000' h='100000'>
+      <a:moveTo><a:pt x='50000' y='25000'/></a:moveTo>
+      <a:lnTo><a:pt x='75000' y='50000'/></a:lnTo>
+      <a:lnTo><a:pt x='50000' y='75000'/></a:lnTo>
+      <a:lnTo><a:pt x='25000' y='50000'/></a:lnTo>
+      <a:close/>
+    </a:path>
+  </a:pathLst>
+</a:custGeom>""",
+)
+
+# 3) Open curve with fill="none" — a sine-wave-like cubic bezier stroke.
+open_curve = custgeom_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(5.75), Inches(2), Inches(3), Inches(2)
+)
+open_curve.fill.solid()
+open_curve.fill.fore_color.rgb = RGBColor(0x4F, 0xBD, 0x81)
+open_curve.line.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
+open_curve.line.width = Emu(38100)
+_replace_geom(
+    open_curve,
+    """<a:custGeom xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'>
+  <a:avLst/>
+  <a:gdLst/>
+  <a:ahLst/>
+  <a:cxnLst/>
+  <a:rect l='0' t='0' r='0' b='0'/>
+  <a:pathLst>
+    <a:path w='100000' h='100000' fill='none'>
+      <a:moveTo><a:pt x='0' y='50000'/></a:moveTo>
+      <a:cubicBezTo>
+        <a:pt x='25000' y='0'/>
+        <a:pt x='75000' y='100000'/>
+        <a:pt x='100000' y='50000'/>
+      </a:cubicBezTo>
+    </a:path>
+  </a:pathLst>
+</a:custGeom>""",
+)
+
 # Slide with a table.
 table_slide = prs.slides.add_slide(prs.slide_layouts[5])
 table_slide.shapes.title.text = "A table"
