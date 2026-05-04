@@ -2,12 +2,57 @@
 // to render solids today (e.g. shape borders / SVG strokes). Non-solid fills
 // should use `fillToCssBackground` below.
 
-import type { Fill, GradientFill, BlipFill, PatternFill } from '../fill';
+import type { Fill, GradientFill, BlipFill, PatternFill, LineStyle } from '../fill';
 
 export function solidColorFromFill(fill: Fill | null): string | null {
 	if (!fill) return null;
 	if (fill.kind === 'solid') return fill.colorHex;
 	return null;
+}
+
+// Map DrawingML <a:prstDash> onto the closest CSS border-style token. "solid"
+// is used as the default when dash is null/unknown. Dash-dot variants fall
+// back to "dashed" since CSS has no native dash-dot border-style.
+export function lineDashToCss(dash: LineStyle['dash']): string {
+	switch (dash) {
+		case 'dash':
+		case 'lgDash':
+		case 'sysDash':
+		case 'dashDot':
+		case 'lgDashDot':
+		case 'sysDashDot':
+			return 'dashed';
+		case 'dot':
+		case 'sysDot':
+			return 'dotted';
+		case 'solid':
+		case null:
+		case undefined:
+		default:
+			return 'solid';
+	}
+}
+
+// Map DrawingML <a:prstDash> onto an SVG `stroke-dasharray` expressed in
+// stroke-width units. Returns null for solid/missing (the caller should
+// omit the attribute entirely). Patterns are rough visual approximations
+// of PowerPoint's rendering — fidelity isn't pixel-perfect.
+export function svgDashArray(dash: LineStyle['dash']): string | null {
+	switch (dash) {
+		case 'dash':       return '4 2';
+		case 'dashDot':    return '4 2 1 2';
+		case 'lgDash':     return '8 3';
+		case 'lgDashDot':  return '8 3 1 3';
+		case 'dot':        return '1 2';
+		case 'sysDash':    return '3 1';
+		case 'sysDashDot': return '3 1 1 1';
+		case 'sysDot':     return '1 1';
+		case 'solid':
+		case null:
+		case undefined:
+		default:
+			return null;
+	}
 }
 
 // Produce a CSS value suitable for `element.style.background`. Returns null

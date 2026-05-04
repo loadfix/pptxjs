@@ -6,7 +6,7 @@ from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR_TYPE
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 from lxml import etree
@@ -328,6 +328,135 @@ blip_xml = (
     "</a:blipFill>"
 )
 pic_sp_pr.append(etree.fromstring(blip_xml))
+
+# Slide exercising line dash styles, arrow heads, and dotted borders
+# (Wave 4, A2). python-pptx's connector API doesn't expose <a:prstDash>,
+# <a:headEnd>, or <a:tailEnd>, so we patch the <p:spPr><a:ln> XML directly.
+lines_slide = prs.slides.add_slide(prs.slide_layouts[5])
+lines_slide.shapes.title.text = "Lines"
+
+
+def _set_line_xml(shape, ln_xml):
+    """Replace/insert the <a:ln> child on a shape's <p:spPr>."""
+    spPr = shape._element.spPr
+    for existing in spPr.findall(qn("a:ln")):
+        spPr.remove(existing)
+    spPr.append(etree.fromstring(ln_xml))
+
+
+# Plain solid connector (reference).
+plain = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(1), Inches(2), Inches(4), Inches(2)
+)
+_set_line_xml(
+    plain,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'><a:solidFill><a:srgbClr val='1F497D'/></a:solidFill></a:ln>",
+)
+
+# Dashed connector.
+dashed = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(1), Inches(2.5), Inches(4), Inches(2.5)
+)
+_set_line_xml(
+    dashed,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='C0504D'/></a:solidFill>"
+    "<a:prstDash val='dash'/></a:ln>",
+)
+
+# Dotted connector.
+dotted = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(1), Inches(3), Inches(4), Inches(3)
+)
+_set_line_xml(
+    dotted,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='4F81BD'/></a:solidFill>"
+    "<a:prstDash val='dot'/></a:ln>",
+)
+
+# Long-dash-dot connector.
+lgdashdot = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(1), Inches(3.5), Inches(4), Inches(3.5)
+)
+_set_line_xml(
+    lgdashdot,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='5A7A3B'/></a:solidFill>"
+    "<a:prstDash val='lgDashDot'/></a:ln>",
+)
+
+# Arrow-head connector (triangle tail, no head).
+arrow = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(5.5), Inches(2), Inches(8.5), Inches(2)
+)
+_set_line_xml(
+    arrow,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='1F497D'/></a:solidFill>"
+    "<a:tailEnd type='triangle' w='med' len='med'/></a:ln>",
+)
+
+# Double-headed stealth arrow.
+stealth = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(5.5), Inches(2.5), Inches(8.5), Inches(2.5)
+)
+_set_line_xml(
+    stealth,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='C0504D'/></a:solidFill>"
+    "<a:headEnd type='stealth' w='lg' len='lg'/>"
+    "<a:tailEnd type='stealth' w='lg' len='lg'/></a:ln>",
+)
+
+# Diamond + oval ends on a dashed connector.
+diamond = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(5.5), Inches(3), Inches(8.5), Inches(3)
+)
+_set_line_xml(
+    diamond,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='4F81BD'/></a:solidFill>"
+    "<a:prstDash val='dash'/>"
+    "<a:headEnd type='diamond' w='med' len='med'/>"
+    "<a:tailEnd type='oval' w='med' len='med'/></a:ln>",
+)
+
+# Dotted-border rectangle with a round cap + bevel join (non-trivial ln attrs).
+dotted_rect = lines_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(1), Inches(4.5), Inches(3), Inches(1.5)
+)
+dotted_rect.fill.background()
+_set_line_xml(
+    dotted_rect,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='28575' cap='rnd'>"
+    "<a:solidFill><a:srgbClr val='C0504D'/></a:solidFill>"
+    "<a:prstDash val='dot'/>"
+    "<a:bevel/></a:ln>",
+)
+dotted_rect.text_frame.text = "Dotted border"
+
+# Double-compound-line rectangle (cmpd=dbl).
+dbl_rect = lines_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(5), Inches(4.5), Inches(3), Inches(1.5)
+)
+dbl_rect.fill.background()
+_set_line_xml(
+    dbl_rect,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='38100' cmpd='dbl'>"
+    "<a:solidFill><a:srgbClr val='1F497D'/></a:solidFill></a:ln>",
+)
+dbl_rect.text_frame.text = "Double border"
+
 # Typography slide — exercises underline, strike, super/sub, letter-spacing,
 # and paragraph line-spacing. python-pptx's high-level Font only exposes
 # bold/italic/underline/color/size, so we patch the rPr/pPr XML for the rest.
