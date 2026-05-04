@@ -26,6 +26,27 @@ import { applyMods } from './color-math';
 export interface SlideSize {
 	cx: number;
 	cy: number;
+	// Raw <p:sldSz type="..."> attribute (screen4x3, screen16x9, letter, A4, …).
+	// Null when the deck didn't declare one — hosts that care should fall back
+	// to inferring from cx/cy. Values are passed through verbatim; pptxjs does
+	// not enumerate the ECMA-376 list.
+	type: string | null;
+	// <p:sldSz orient="..."> — 'landscape' (default) or 'portrait'. Null means
+	// the attribute was absent; treat as landscape.
+	orient: 'landscape' | 'portrait' | null;
+}
+
+// A presentation section from <p14:sectionLst>. Sections group slides for
+// navigation / ToC purposes but have no visual effect on rendering.
+export interface Section {
+	// The section's GUID including braces, e.g. "{ABCD1234-...}" — passed
+	// through verbatim from the `id` attribute.
+	id: string;
+	name: string;
+	// 0-based indices into Presentation.slides for each slide referenced by
+	// this section's <p14:sldIdLst>. Slides that couldn't be resolved (id not
+	// found in the presentation's own sldIdLst) are omitted.
+	slideIndices: number[];
 }
 
 export interface Slide {
