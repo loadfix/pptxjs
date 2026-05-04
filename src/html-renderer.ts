@@ -114,16 +114,18 @@ function renderShape(shape: Shape, cls: string): HTMLElement {
 		el.appendChild(renderCustGeomSvg(shape));
 	} else {
 		if (shape.fill?.kind === 'solid') el.style.background = shape.fill.colorHex;
-		if (shape.line && shape.line.fill && shape.line.fill.colorHex) {
+		// Wave 2 — render non-solid line fills (gradient/blip/pattern) properly.
+		const lineColor = solidColorFromFill(shape.line?.fill ?? null);
+		if (shape.line && lineColor) {
 			const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;
 			const isHLine = shape.cy === 0;
 			const isVLine = shape.cx === 0;
 			if (isHLine || isVLine) {
-				el.style.background = shape.line.fill.colorHex;
+				el.style.background = lineColor;
 				if (isHLine) el.style.height = `${widthPx}px`;
 				if (isVLine) el.style.width = `${widthPx}px`;
 			} else {
-				el.style.border = `${widthPx}px solid ${shape.line.fill.colorHex}`;
+				el.style.border = `${widthPx}px solid ${lineColor}`;
 			}
 		}
 	}
@@ -151,12 +153,13 @@ function renderCustGeomSvg(shape: Shape): SVGSVGElement {
 	const path = document.createElementNS(SVG_NS, "path");
 	path.setAttribute("d", shape.custGeom!.d);
 	path.setAttribute("fill", shape.fill?.kind === 'solid' ? shape.fill.colorHex : "none");
-	if (shape.line?.fill?.colorHex) {
-		path.setAttribute("stroke", shape.line.fill.colorHex);
+	const strokeColor = solidColorFromFill(shape.line?.fill ?? null);
+	if (strokeColor) {
+		path.setAttribute("stroke", strokeColor);
 		// With vector-effect="non-scaling-stroke" the browser interprets
 		// stroke-width in screen (px) units regardless of the viewBox, so
 		// convert the EMU width accordingly.
-		const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;
+		const widthPx = shape.line!.widthEmu != null ? Math.max(emuToPx(shape.line!.widthEmu), 0.5) : 1;
 		path.setAttribute("stroke-width", String(widthPx));
 		path.setAttribute("vector-effect", "non-scaling-stroke");
 	} else if (!shape.custGeom!.closed && shape.fill?.kind !== 'solid') {
@@ -269,16 +272,40 @@ function toRoman(n: number): string {
 	return out || "I";
 }
 
+// Extract a CSS color string from a Fill, for cases where we only know how to
+// render solids (e.g. shape borders / SVG strokes today). Wave 2 will extend
+// this to render gradients/patterns/blips properly.
+function solidColorFromFill(fill: import('./fill').Fill | null): string | null {
+	if (!fill) return null;
+	if (fill.kind === 'solid') return fill.colorHex;
+	return null;
+}
+
 function renderRun(run: Run): HTMLElement {
+	// Wave 2 — render BreakRun as <br>, FieldRun via field substitution.
+	if (run.kind !== 'text') {
+		// For non-text runs (BreakRun, FieldRun) emit an empty span for now
+		// so paragraph rendering stays well-formed; Wave 2 will replace this.
+		if (run.kind === 'field') {
+			const el = document.createElement("span");
+			el.textContent = run.fallbackText;
+			applyRunStyle(el, run.style);
+			return el;
+		}
+		return document.createElement("span");
+	}
 	const el = document.createElement("span");
 	el.textContent = run.text;
-	const s = run.style;
+	applyRunStyle(el, run.style);
+	return el;
+}
+
+function applyRunStyle(el: HTMLElement, s: import('./presentation-parser').TextRun['style']): void {
 	if (s.bold) el.style.fontWeight = "bold";
 	if (s.italic) el.style.fontStyle = "italic";
 	if (s.sizeHundredths != null) el.style.fontSize = `${s.sizeHundredths / 100}pt`;
 	if (s.colorHex) el.style.color = s.colorHex;
 	if (s.fontFamily) el.style.fontFamily = s.fontFamily;
-	return el;
 }
 
 function makeStyleNode(cls: string, slideW: number, slideH: number): HTMLStyleElement {

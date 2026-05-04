@@ -5,7 +5,8 @@
 
 import { A_NS } from './namespaces';
 import { firstChildNS } from './xml-utils';
-import { ColorMods, parseColorMods, applyMods } from './color-math';
+import { ColorMods } from './color-math';
+import { ClrMap, ThemeColors, resolveColorElement } from './theme';
 
 export interface RunStyle {
 	sizeHundredths: number | null;  // `sz` attribute, hundredths of a point
@@ -18,6 +19,24 @@ export interface RunStyle {
 	colorSchemeSlot: string | null;
 	colorMods: ColorMods | null;    // tint/shade/lumMod/lumOff captured with the schemeClr
 	fontFamily: string | null;
+	// Underline — u="sng" on <a:rPr>. OOXML defines many variants; we pass
+	// through the raw token (narrowed to a known set when it matches).
+	underline: 'none' | 'sng' | 'dbl' | 'heavy' | 'dotted' | 'dash' | 'wavy' | null;
+	// Strike-through — strike="sngStrike"/"dblStrike"/"noStrike" on <a:rPr>,
+	// normalized to 'sng' | 'dbl' | 'none'.
+	strike: 'none' | 'sng' | 'dbl' | null;
+	// baseline shift in per-mille (30000 = +30% super, -25000 = -25% sub).
+	baseline: number | null;
+	// Letter spacing (spc attr) in 1/100 pt.
+	letterSpacingHundredths: number | null;
+	// Kerning minimum (kern attr) in 1/100 pt.
+	kernHundredths: number | null;
+	// Alpha channel 0..1 merged across color sources (<a:alpha val="N"/> is per-mille).
+	alpha: number | null;
+	// Hyperlink relationship id from `<a:hlinkClick r:id="...">`.
+	hyperlinkRId: string | null;
+	// Language code from `<a:rPr lang="en-US">`.
+	lang: string | null;
 }
 
 export function emptyRunStyle(): RunStyle {
@@ -29,6 +48,14 @@ export function emptyRunStyle(): RunStyle {
 		colorSchemeSlot: null,
 		colorMods: null,
 		fontFamily: null,
+		underline: null,
+		strike: null,
+		baseline: null,
+		letterSpacingHundredths: null,
+		kernHundredths: null,
+		alpha: null,
+		hyperlinkRId: null,
+		lang: null,
 	};
 }
 
@@ -46,11 +73,54 @@ export function mergeRunStyle(under: RunStyle, over: RunStyle): RunStyle {
 		colorSchemeSlot: overHasColor ? over.colorSchemeSlot : under.colorSchemeSlot,
 		colorMods: overHasColor ? over.colorMods : under.colorMods,
 		fontFamily: over.fontFamily ?? under.fontFamily,
+		underline: over.underline ?? under.underline,
+		strike: over.strike ?? under.strike,
+		baseline: over.baseline ?? under.baseline,
+		letterSpacingHundredths: over.letterSpacingHundredths ?? under.letterSpacingHundredths,
+		kernHundredths: over.kernHundredths ?? under.kernHundredths,
+		// Alpha follows the color source when the color was overridden; otherwise
+		// take over's alpha if present.
+		alpha: overHasColor ? (over.alpha ?? null) : (over.alpha ?? under.alpha),
+		hyperlinkRId: over.hyperlinkRId ?? under.hyperlinkRId,
+		lang: over.lang ?? under.lang,
 	};
 }
 
-// Parse a `<a:rPr>` or `<a:defRPr>` element. All fields are optional.
-export function parseRunProps(el: Element | null): RunStyle {
+const KNOWN_UNDERLINES = new Set([
+	'none', 'sng', 'dbl', 'heavy', 'dotted', 'dotted', 'dash', 'wavy',
+	// OOXML dash-variants grouped into 'dash' for rendering simplicity
+	'dashLong', 'dashLongHeavy', 'dashHeavy', 'dotDash', 'dotDotDash',
+	'dottedHeavy', 'wavyHeavy', 'wavyDbl',
+]);
+
+function normalizeUnderline(u: string): RunStyle['underline'] {
+	if (u === 'none') return 'none';
+	if (u === 'sng') return 'sng';
+	if (u === 'dbl' || u === 'wavyDbl') return 'dbl';
+	if (u === 'heavy' || u === 'dashHeavy' || u === 'dottedHeavy' || u === 'wavyHeavy') return 'heavy';
+	if (u === 'dotted' || u === 'dotDash' || u === 'dotDotDash') return 'dotted';
+	if (u === 'dash' || u === 'dashLong' || u === 'dashLongHeavy') return 'dash';
+	if (u === 'wavy') return 'wavy';
+	if (KNOWN_UNDERLINES.has(u)) return 'sng';
+	return null;
+}
+
+function normalizeStrike(s: string): RunStyle['strike'] {
+	if (s === 'noStrike') return 'none';
+	if (s === 'sngStrike') return 'sng';
+	if (s === 'dblStrike') return 'dbl';
+	return null;
+}
+
+// Parse a `<a:rPr>` or `<a:defRPr>` element. All fields are optional. If
+// `clrMap` / `theme` are provided, concrete color elements are resolved via
+// `resolveColorElement`; otherwise only srgbClr/schemeClr are parsed and
+// left for later resolution.
+export function parseRunProps(
+	el: Element | null,
+	clrMap?: ClrMap,
+	theme?: ThemeColors,
+): RunStyle {
 	const s = emptyRunStyle();
 	if (!el) return s;
 	const sz = el.getAttribute("sz");
@@ -60,25 +130,53 @@ export function parseRunProps(el: Element | null): RunStyle {
 	const i = el.getAttribute("i");
 	if (i != null) s.italic = i === "1";
 
+	const u = el.getAttribute("u");
+	if (u) s.underline = normalizeUnderline(u);
+
+	const strike = el.getAttribute("strike");
+	if (strike) s.strike = normalizeStrike(strike);
+
+	const baseline = el.getAttribute("baseline");
+	if (baseline != null && baseline !== "") {
+		const n = Number(baseline);
+		if (!Number.isNaN(n)) s.baseline = n;
+	}
+
+	const spc = el.getAttribute("spc");
+	if (spc != null && spc !== "") {
+		const n = Number(spc);
+		if (!Number.isNaN(n)) s.letterSpacingHundredths = n;
+	}
+
+	const kern = el.getAttribute("kern");
+	if (kern != null && kern !== "") {
+		const n = Number(kern);
+		if (!Number.isNaN(n)) s.kernHundredths = n;
+	}
+
+	const lang = el.getAttribute("lang");
+	if (lang) s.lang = lang;
+
 	const solidFill = firstChildNS(el, A_NS.a, "solidFill");
 	if (solidFill) {
-		const srgb = firstChildNS(solidFill, A_NS.a, "srgbClr");
-		if (srgb) {
-			const v = srgb.getAttribute("val");
-			if (v && /^[0-9a-fA-F]{6}$/.test(v)) {
-				// Apply any modifier children directly on the srgb element.
-				s.colorHex = applyMods(`#${v}`, parseColorMods(srgb));
-			}
-		} else {
-			const scheme = firstChildNS(solidFill, A_NS.a, "schemeClr");
-			if (scheme) {
-				const v = scheme.getAttribute("val");
-				if (v) {
-					s.colorSchemeSlot = v;
-					s.colorMods = parseColorMods(scheme);
-				}
+		// Pick the first color-bearing child of the solidFill.
+		const colorChild = firstColorChild(solidFill);
+		if (colorChild) {
+			const r = resolveColorElement(colorChild, clrMap ?? {}, theme);
+			if (r) {
+				s.colorHex = r.colorHex;
+				s.colorSchemeSlot = r.schemeSlot;
+				s.colorMods = r.mods;
+				s.alpha = r.alpha;
 			}
 		}
+	}
+
+	// Hyperlink on run: <a:rPr><a:hlinkClick r:id="rIdN"/></a:rPr>.
+	const hlinkClick = firstChildNS(el, A_NS.a, "hlinkClick");
+	if (hlinkClick) {
+		const rid = hlinkClick.getAttributeNS(A_NS.r, "id");
+		if (rid) s.hyperlinkRId = rid;
 	}
 
 	const latin = firstChildNS(el, A_NS.a, "latin");
@@ -89,6 +187,20 @@ export function parseRunProps(el: Element | null): RunStyle {
 		if (t) s.fontFamily = t;
 	}
 	return s;
+}
+
+// Return the first child of `el` that looks like a color-bearing DrawingML
+// element. Supports srgbClr, schemeClr, prstClr, sysClr, scrgbClr, hslClr.
+function firstColorChild(el: Element): Element | null {
+	for (const c of Array.from(el.children)) {
+		if (c.namespaceURI !== A_NS.a) continue;
+		const ln = c.localName;
+		if (
+			ln === 'srgbClr' || ln === 'schemeClr' || ln === 'prstClr'
+			|| ln === 'sysClr' || ln === 'scrgbClr' || ln === 'hslClr'
+		) return c;
+	}
+	return null;
 }
 
 // Paragraph-level properties. Inherits through the same chain as RunStyle.
@@ -102,15 +214,48 @@ export interface ParaStyle {
 	// Bullet: 'none' (explicit <a:buNone/>) | { char } | { autoNum }. null means
 	// "not set" — inherit. 'none' means "explicitly suppressed".
 	bullet: BulletDef | null;
+	// Line spacing and space-before/after can be expressed as per-mille percent
+	// or as hundredths-of-a-point absolute.
+	lineSpacing: LineSpacing | null;
+	spaceBefore: LineSpacing | null;
+	spaceAfter: LineSpacing | null;
+	// Right-to-left paragraph flag (<a:pPr rtl="1">).
+	rtl: boolean | null;
+	// Tab stops (<a:tabLst><a:tab pos="..." algn="..."/>). `pos` is EMU.
+	tabs: TabStop[] | null;
+}
+
+export type LineSpacing = { kind: 'pct'; value: number } | { kind: 'pts'; value: number };
+
+export interface TabStop {
+	pos: number;
+	align: 'l' | 'ctr' | 'r' | 'dec' | 'clear';
+}
+
+export interface BulletMarker {
+	// Bullet text size as a per-mille percent of the run's size.
+	sizePct: number | null;
+	colorHex: string | null;
+	fontFamily: string | null;
 }
 
 export type BulletDef =
 	| { kind: "none" }
-	| { kind: "char"; char: string }
-	| { kind: "autoNum"; type: string; startAt: number | null };
+	| ({ kind: "char"; char: string } & BulletMarker)
+	| ({ kind: "autoNum"; type: string; startAt: number | null } & BulletMarker);
 
 export function emptyParaStyle(): ParaStyle {
-	return { align: null, marL: null, indent: null, bullet: null };
+	return {
+		align: null,
+		marL: null,
+		indent: null,
+		bullet: null,
+		lineSpacing: null,
+		spaceBefore: null,
+		spaceAfter: null,
+		rtl: null,
+		tabs: null,
+	};
 }
 
 export function mergeParaStyle(under: ParaStyle, over: ParaStyle): ParaStyle {
@@ -119,12 +264,57 @@ export function mergeParaStyle(under: ParaStyle, over: ParaStyle): ParaStyle {
 		marL: over.marL ?? under.marL,
 		indent: over.indent ?? under.indent,
 		bullet: over.bullet ?? under.bullet,
+		lineSpacing: over.lineSpacing ?? under.lineSpacing,
+		spaceBefore: over.spaceBefore ?? under.spaceBefore,
+		spaceAfter: over.spaceAfter ?? under.spaceAfter,
+		rtl: over.rtl ?? under.rtl,
+		tabs: over.tabs ?? under.tabs,
 	};
+}
+
+// Parse <a:lnSpc>|<a:spcBef>|<a:spcAft> wrapper element.
+function parseSpcWrapper(wrap: Element | null): LineSpacing | null {
+	if (!wrap) return null;
+	const pct = firstChildNS(wrap, A_NS.a, "spcPct");
+	if (pct) {
+		const v = pct.getAttribute("val");
+		if (v != null) {
+			const n = Number(v);
+			if (!Number.isNaN(n)) return { kind: 'pct', value: n };
+		}
+	}
+	const pts = firstChildNS(wrap, A_NS.a, "spcPts");
+	if (pts) {
+		const v = pts.getAttribute("val");
+		if (v != null) {
+			const n = Number(v);
+			if (!Number.isNaN(n)) return { kind: 'pts', value: n };
+		}
+	}
+	return null;
+}
+
+function parseTabLst(lst: Element | null): TabStop[] | null {
+	if (!lst) return null;
+	const out: TabStop[] = [];
+	for (const t of Array.from(lst.children)) {
+		if (t.namespaceURI !== A_NS.a || t.localName !== 'tab') continue;
+		const pos = Number(t.getAttribute("pos")) || 0;
+		const algnRaw = t.getAttribute("algn") || 'l';
+		const algn: TabStop['align'] =
+			algnRaw === 'ctr' || algnRaw === 'r' || algnRaw === 'dec' || algnRaw === 'clear' ? algnRaw : 'l';
+		out.push({ pos, align: algn });
+	}
+	return out.length ? out : null;
 }
 
 // Parse `<a:lvl1pPr>` etc. (or an inline `<a:pPr>`) for paragraph-level
 // properties. Returns an empty style when the element is null.
-export function parseParaProps(el: Element | null): ParaStyle {
+export function parseParaProps(
+	el: Element | null,
+	clrMap?: ClrMap,
+	theme?: ThemeColors,
+): ParaStyle {
 	const s = emptyParaStyle();
 	if (!el) return s;
 
@@ -136,6 +326,43 @@ export function parseParaProps(el: Element | null): ParaStyle {
 	const indent = el.getAttribute("indent");
 	if (indent != null) s.indent = Number(indent);
 
+	const rtl = el.getAttribute("rtl");
+	if (rtl != null) s.rtl = rtl === "1";
+
+	s.lineSpacing = parseSpcWrapper(firstChildNS(el, A_NS.a, "lnSpc"));
+	s.spaceBefore = parseSpcWrapper(firstChildNS(el, A_NS.a, "spcBef"));
+	s.spaceAfter = parseSpcWrapper(firstChildNS(el, A_NS.a, "spcAft"));
+
+	s.tabs = parseTabLst(firstChildNS(el, A_NS.a, "tabLst"));
+
+	// Bullet style decorations (size / color / font). Captured independently
+	// of kind — they modify whichever marker type ends up chosen.
+	let bulletSizePct: number | null = null;
+	let bulletColorHex: string | null = null;
+	let bulletFontFamily: string | null = null;
+
+	const buSzPct = firstChildNS(el, A_NS.a, "buSzPct");
+	if (buSzPct) {
+		const v = buSzPct.getAttribute("val");
+		if (v != null) {
+			const n = Number(v);
+			if (!Number.isNaN(n)) bulletSizePct = n;
+		}
+	}
+	const buClr = firstChildNS(el, A_NS.a, "buClr");
+	if (buClr) {
+		const colorEl = firstColorChild(buClr);
+		if (colorEl) {
+			const r = resolveColorElement(colorEl, clrMap ?? {}, theme);
+			if (r) bulletColorHex = r.colorHex;
+		}
+	}
+	const buFont = firstChildNS(el, A_NS.a, "buFont");
+	if (buFont) {
+		const typeface = buFont.getAttribute("typeface");
+		if (typeface) bulletFontFamily = typeface;
+	}
+
 	// Bullet markers. Only one of these is set per paragraph; check in
 	// preference order: explicit none, char, autoNum.
 	if (firstChildNS(el, A_NS.a, "buNone")) {
@@ -145,12 +372,23 @@ export function parseParaProps(el: Element | null): ParaStyle {
 		const buAutoNum = firstChildNS(el, A_NS.a, "buAutoNum");
 		if (buChar) {
 			const c = buChar.getAttribute("char");
-			if (c) s.bullet = { kind: "char", char: c };
+			if (c) {
+				s.bullet = {
+					kind: "char",
+					char: c,
+					sizePct: bulletSizePct,
+					colorHex: bulletColorHex,
+					fontFamily: bulletFontFamily,
+				};
+			}
 		} else if (buAutoNum) {
 			s.bullet = {
 				kind: "autoNum",
 				type: buAutoNum.getAttribute("type") ?? "arabicPeriod",
 				startAt: buAutoNum.getAttribute("startAt") ? Number(buAutoNum.getAttribute("startAt")) : null,
+				sizePct: bulletSizePct,
+				colorHex: bulletColorHex,
+				fontFamily: bulletFontFamily,
 			};
 		}
 	}
@@ -173,7 +411,11 @@ export function emptyLevelStyles(): LevelStyles {
 // Parse an <a:lstStyle> or <p:titleStyle>/<p:bodyStyle>/<p:otherStyle> — any
 // element whose children are <a:lvl1pPr>..<a:lvl9pPr> (and optionally
 // <a:defPPr>).
-export function parseLevelStyles(container: Element | null): LevelStyles {
+export function parseLevelStyles(
+	container: Element | null,
+	clrMap?: ClrMap,
+	theme?: ThemeColors,
+): LevelStyles {
 	const out = emptyLevelStyles();
 	if (!container) return out;
 	for (let lvl = 1; lvl <= 9; lvl++) {
@@ -181,9 +423,95 @@ export function parseLevelStyles(container: Element | null): LevelStyles {
 		if (!lvlEl) continue;
 		const defRPr = firstChildNS(lvlEl, A_NS.a, "defRPr");
 		out[lvl - 1] = {
-			run: defRPr ? parseRunProps(defRPr) : null,
-			para: parseParaProps(lvlEl),
+			run: defRPr ? parseRunProps(defRPr, clrMap, theme) : null,
+			para: parseParaProps(lvlEl, clrMap, theme),
 		};
 	}
+	return out;
+}
+
+// -- Body properties (<a:bodyPr>) ---------------------------------------------
+
+export interface BodyProperties {
+	lInsEmu: number | null;
+	tInsEmu: number | null;
+	rInsEmu: number | null;
+	bInsEmu: number | null;
+	anchor: 't' | 'ctr' | 'b' | 'just' | 'dist' | null;
+	wrap: 'none' | 'square' | null;
+	vert: 'horz' | 'vert' | 'vert270' | 'wordArtVert' | 'eaVert' | 'mongolianVert' | 'wordArtVertRtl' | null;
+	numCol: number | null;
+	spcColEmu: number | null;
+	autofit:
+		| { kind: 'none' }
+		| { kind: 'normAutofit'; fontScale: number | null; lnSpcReduction: number | null }
+		| { kind: 'spAutoFit' }
+		| null;
+}
+
+export function emptyBodyProperties(): BodyProperties {
+	return {
+		lInsEmu: null,
+		tInsEmu: null,
+		rInsEmu: null,
+		bInsEmu: null,
+		anchor: null,
+		wrap: null,
+		vert: null,
+		numCol: null,
+		spcColEmu: null,
+		autofit: null,
+	};
+}
+
+export function parseBodyPr(bodyPrEl: Element | null): BodyProperties | null {
+	if (!bodyPrEl) return null;
+	const out = emptyBodyProperties();
+
+	const numAttr = (n: string): number | null => {
+		const v = bodyPrEl.getAttribute(n);
+		if (v == null || v === "") return null;
+		const num = Number(v);
+		return Number.isNaN(num) ? null : num;
+	};
+
+	out.lInsEmu = numAttr("lIns");
+	out.tInsEmu = numAttr("tIns");
+	out.rInsEmu = numAttr("rIns");
+	out.bInsEmu = numAttr("bIns");
+
+	const anchor = bodyPrEl.getAttribute("anchor");
+	if (anchor === 't' || anchor === 'ctr' || anchor === 'b' || anchor === 'just' || anchor === 'dist') {
+		out.anchor = anchor;
+	}
+	const wrap = bodyPrEl.getAttribute("wrap");
+	if (wrap === 'none' || wrap === 'square') out.wrap = wrap;
+
+	const vert = bodyPrEl.getAttribute("vert");
+	if (
+		vert === 'horz' || vert === 'vert' || vert === 'vert270'
+		|| vert === 'wordArtVert' || vert === 'eaVert'
+		|| vert === 'mongolianVert' || vert === 'wordArtVertRtl'
+	) out.vert = vert;
+
+	out.numCol = numAttr("numCol");
+	out.spcColEmu = numAttr("spcCol");
+
+	// Autofit children — first match wins.
+	const normAutofit = firstChildNS(bodyPrEl, A_NS.a, "normAutofit");
+	if (normAutofit) {
+		const fs = normAutofit.getAttribute("fontScale");
+		const ls = normAutofit.getAttribute("lnSpcReduction");
+		out.autofit = {
+			kind: 'normAutofit',
+			fontScale: fs != null && fs !== "" ? Number(fs) : null,
+			lnSpcReduction: ls != null && ls !== "" ? Number(ls) : null,
+		};
+	} else if (firstChildNS(bodyPrEl, A_NS.a, "spAutoFit")) {
+		out.autofit = { kind: 'spAutoFit' };
+	} else if (firstChildNS(bodyPrEl, A_NS.a, "noAutofit")) {
+		out.autofit = { kind: 'none' };
+	}
+
 	return out;
 }
