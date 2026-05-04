@@ -12,7 +12,7 @@ import {
 	lineDashToCss,
 	svgDashArray,
 } from './fill-utils';
-import { withAlphaHex } from '../color-math';
+import { withAlphaHex, darken, lighten } from '../color-math';
 import { presetToSvgPath } from '../preset-geom';
 import { wrapInHyperlink } from './hyperlink';
 
@@ -328,10 +328,24 @@ function reflectionToWebkitBoxReflect(r: Reflection): string | null {
 	return `below ${gapPx.toFixed(2)}px ${mask}`;
 }
 
+// Override for the path's fill, carried through buildShapeSvg. `none` forces
+// fill="none" (e.g. <a:path fill="none">); `color` paints a specific hex
+// (e.g. custGeom darken/lighten, pre-computed from the shape's base color);
+// `filter` keeps the shape's fill but applies a CSS filter to the path (used
+// when darken/lighten hits a non-solid base and we fall back to a brightness
+// approximation).
+type FillOverride =
+	| 'none'
+	| { kind: 'color'; hex: string }
+	| { kind: 'filter'; css: string };
+
 // Shared machinery that turns a (vbW, vbH, d) triple into an <svg> matching
 // the shape's fill/stroke styling. Used by both custGeom and presetGeom.
 // `fillOverride === 'none'` forces the path's fill to "none" regardless of
 // shape.fill — used when <a:path fill="none"> explicitly suppresses fill.
+// `fillOverride` as `{ kind: 'color' }` overrides with a specific color
+// (darken/lighten applied up-front). `{ kind: 'filter' }` keeps the paint
+// server but layers a CSS filter for non-solid fallbacks.
 function buildShapeSvg(
 	shape: Shape,
 	vbW: number,
@@ -339,7 +353,7 @@ function buildShapeSvg(
 	d: string,
 	closed: boolean,
 	embedUrls: Map<string, string>,
-	fillOverride?: 'none',
+	fillOverride?: FillOverride,
 ): SVGSVGElement {
 	const svg = document.createElementNS(SVG_NS, "svg");
 	svg.setAttribute("width", "100%");
@@ -356,9 +370,13 @@ function buildShapeSvg(
 	path.setAttribute("d", d);
 
 	// Fill — supports the full union (solid/gradient/pattern/blip) via
-	// fillToSvgPaint. `fillOverride === 'none'` takes precedence.
+	// fillToSvgPaint. `fillOverride === 'none'` takes precedence; a `color`
+	// override replaces the paint with a specific hex (used for custGeom
+	// darken/lighten on solid fills).
 	if (fillOverride === 'none') {
 		path.setAttribute("fill", "none");
+	} else if (typeof fillOverride === 'object' && fillOverride.kind === 'color') {
+		path.setAttribute("fill", fillOverride.hex);
 	} else {
 		const fillPaint = fillToSvgPaint(shape.fill, embedUrls, 'pptxjs-fill');
 		if (fillPaint) {
@@ -367,6 +385,13 @@ function buildShapeSvg(
 		} else {
 			path.setAttribute("fill", "none");
 		}
+	}
+	// Non-solid darken/lighten fallback — apply brightness() via CSS filter on
+	// the path itself. Imprecise (filter touches the stroke too, and brightness
+	// clips highlights rather than mimicking HSL luminance), but the only
+	// render-time hook available without a full paint-server recolor pass.
+	if (typeof fillOverride === 'object' && fillOverride.kind === 'filter') {
+		path.style.filter = fillOverride.css;
 	}
 
 	// Stroke — supports the full fill union as well. Gradients/patterns/blips
@@ -570,8 +595,37 @@ function renderDegenerateLineSvg(el: HTMLElement, shape: Shape, embedUrls: Map<s
 export function renderCustGeomSvg(shape: Shape, embedUrls: Map<string, string>): SVGSVGElement {
 	const vbW = shape.custGeom!.pathW || Math.max(shape.cx, 1);
 	const vbH = shape.custGeom!.pathH || Math.max(shape.cy, 1);
-	const fillOverride = shape.custGeom!.fillMode === 'none' ? 'none' : undefined;
+	// NOTE: multi-path custGeoms with differing <a:path fill> modes only honour
+	// the first path's mode. Wave 4 concatenates every path into a single
+	// `d` string, and SVG <path d> takes one fill for the whole thing —
+	// rendering per-path fills would require emitting separate <path>
+	// elements per sub-path, a larger refactor.
+	const fillOverride = custGeomFillOverride(shape);
 	return buildShapeSvg(shape, vbW, vbH, shape.custGeom!.d, shape.custGeom!.closed, embedUrls, fillOverride);
+}
+
+// Translate a custGeom's <a:path fill> mode onto the buildShapeSvg override.
+// `none` → suppress fill; `darken`/`lighten` on a solid fill → precomputed
+// hex; `darken`/`lighten` on a non-solid fill → CSS brightness() filter as
+// an approximation (gradient/pattern/blip can't be recoloured cheaply).
+function custGeomFillOverride(shape: Shape): FillOverride | undefined {
+	const mode = shape.custGeom!.fillMode;
+	if (mode === 'none') return 'none';
+	if (mode !== 'darken' && mode !== 'lighten') return undefined;
+	const fill = shape.fill;
+	if (fill && fill.kind === 'solid') {
+		const base = withAlphaHex(fill.colorHex, fill.alpha);
+		// Only the RGB bytes go through lumMod; splice any alpha back on.
+		const baseRgb = base.length === 9 ? base.slice(0, 7) : base;
+		const alphaSuffix = base.length === 9 ? base.slice(7) : '';
+		const shifted = mode === 'darken' ? darken(baseRgb) : lighten(baseRgb);
+		return { kind: 'color', hex: `${shifted}${alphaSuffix}` };
+	}
+	// Gradient/pattern/blip approximation — CSS filter: brightness(). 0.75
+	// and 1.33 mirror the inverse pair used on solids (l *= 0.75 one way,
+	// l/0.75 the other).
+	const css = mode === 'darken' ? 'brightness(0.75)' : 'brightness(1.33)';
+	return { kind: 'filter', css };
 }
 
 export function renderPresetGeomSvg(shape: Shape, embedUrls: Map<string, string>): SVGSVGElement | null {
