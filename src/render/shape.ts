@@ -70,7 +70,7 @@ export function renderShape(
 	if (shape.effects) applyEffects(el, shape.effects);
 
 	if (shape.paragraphs.length > 0) {
-		el.appendChild(renderTextBody(shape, hyperlinkUrls, fieldCtx));
+		el.appendChild(renderTextBody(shape, hyperlinkUrls, embedUrls, fieldCtx));
 	}
 	// Whole-shape click-action: wrap the positioned box in an <a>. The anchor
 	// inherits the shape's position so the hit area is the shape itself.
@@ -107,6 +107,7 @@ export function renderShape(
 function renderTextBody(
 	shape: Shape,
 	hyperlinkUrls: Map<string, string>,
+	embedUrls: Map<string, string>,
 	fieldCtx?: FieldContext,
 ): HTMLElement {
 	const bp: BodyProperties | null = shape.bodyPr;
@@ -183,7 +184,7 @@ function renderTextBody(
 
 	const autoNumState: AutoNumState = new Map();
 	for (const p of shape.paragraphs) {
-		wrap.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx));
+		wrap.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls));
 	}
 	return wrap;
 }

@@ -30,7 +30,7 @@ export function renderShapeLike(
 		if (shape.phType === 'dt' && !flags.dt) return null;
 	}
 	if (shape.kind === 'pic') return renderPic(shape, cls, hyperlinkUrls);
-	if (shape.kind === 'table') return renderTable(shape, cls, tableStyles, hyperlinkUrls, fieldCtx);
+	if (shape.kind === 'table') return renderTable(shape, cls, tableStyles, hyperlinkUrls, embedUrls, fieldCtx);
 	if (shape.kind === 'chart-fallback') return renderChartFallback(shape, cls);
 	if (shape.kind === 'smartart-fallback') return renderSmartArtFallback(shape, cls);
 	return renderShape(shape, cls, embedUrls, hyperlinkUrls, fieldCtx);

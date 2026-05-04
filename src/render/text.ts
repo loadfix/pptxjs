@@ -33,17 +33,25 @@ export function renderParagraph(
 	hyperlinkUrls: Map<string, string>,
 	fieldCtx?: FieldContext,
 	bodyCtx?: BodyTextContext,
+	embedUrls?: Map<string, string>,
 ): HTMLElement {
 	const el = document.createElement("p");
 	el.style.margin = "0";
 
-	// Left margin — prefer parsed marL (EMU), else fall back to level * 24px.
-	if (p.style.marL != null) {
-		el.style.marginLeft = `${emuToPx(p.style.marL)}px`;
-	} else if (p.level > 0) {
-		el.style.marginLeft = `${p.level * 24}px`;
+	// Left padding — effective left margin comes from `marL` when set, else
+	// falls back to the PowerPoint default of 342900 EMU per indent level
+	// (roughly 0.375"). Emit as padding-left so text-indent on the first line
+	// pulls the bullet marker back into the gutter without clipping.
+	const DEFAULT_MARL_PER_LEVEL_EMU = 342900;
+	const effectiveMarL = p.style.marL != null
+		? p.style.marL
+		: (p.level > 0 ? p.level * DEFAULT_MARL_PER_LEVEL_EMU : 0);
+	if (effectiveMarL > 0) {
+		el.style.paddingLeft = `${emuToPx(effectiveMarL)}px`;
 	}
-	if (p.style.indent != null) {
+	// First-line indent. OOXML stores `indent` as a signed EMU; negative
+	// values pull the bullet marker left of the text block (hanging indent).
+	if (p.style.indent != null && p.style.indent !== 0) {
 		el.style.textIndent = `${emuToPx(p.style.indent)}px`;
 	}
 
@@ -101,6 +109,20 @@ export function renderParagraph(
 		if (bullet.fontFamily) marker.style.fontFamily = bullet.fontFamily;
 		if (bullet.kind === "char") {
 			marker.textContent = bullet.char;
+		} else if (bullet.kind === "blip") {
+			// Image bullet — resolve the rId through the embedUrls map.
+			// Fall back silently (empty marker) when the embed is missing.
+			const url = embedUrls?.get(bullet.rId);
+			if (url) {
+				const img = document.createElement("img");
+				img.src = url;
+				img.alt = "";
+				// Size the glyph to roughly the text height. Using `em` keeps it
+				// in sync with the surrounding run size.
+				img.style.height = "1em";
+				img.style.verticalAlign = "text-bottom";
+				marker.appendChild(img);
+			}
 		} else {
 			const prev = autoNumState.get(p.level) ?? (bullet.startAt != null ? bullet.startAt - 1 : 0);
 			const n = prev + 1;
@@ -119,22 +141,108 @@ export function renderParagraph(
 	return el;
 }
 
-// Subset of OOXML auto-number types. See ECMA-376 §21.1.2.1 for the full
-// list; these cover what python-pptx / Office routinely emit.
+// OOXML auto-number types. See ECMA-376 §21.1.2.1 (ST_TextAutonumberScheme)
+// for the full list. Unhandled exotic variants fall through to `${n}.`.
 export function formatAutoNum(type: string, n: number): string {
 	switch (type) {
+		// --- Arabic ---
 		case "arabicPeriod": return `${n}.`;
 		case "arabicParenR": return `${n})`;
 		case "arabicParenBoth": return `(${n})`;
 		case "arabicPlain": return `${n}`;
+		case "arabic1Minus": return `${n}-`;
+		case "arabic2Minus": return `${n}.-`;
+		// Double-byte arabic — render as plain ASCII digits for now.
+		case "arabicDbPeriod": return `${n}.`;
+		case "arabicDbPlain": return `${n}`;
+
+		// --- Latin alpha ---
 		case "alphaLcPeriod": return `${toAlpha(n).toLowerCase()}.`;
 		case "alphaUcPeriod": return `${toAlpha(n)}.`;
 		case "alphaLcParenR": return `${toAlpha(n).toLowerCase()})`;
 		case "alphaUcParenR": return `${toAlpha(n)})`;
+
+		// --- Roman ---
 		case "romanLcPeriod": return `${toRoman(n).toLowerCase()}.`;
 		case "romanUcPeriod": return `${toRoman(n)}.`;
+
+		// --- Circled numerals (Unicode U+2460..U+2473 for 1..20) ---
+		case "circleNumDbPlain":
+		case "circleNumWdBlackPlain":
+		case "circleNumWdWhitePlain":
+			return toCircled(n);
+
+		// --- East-Asian numerals. Chs/Cht/Jpn share CJK digits 一,二...十. ---
+		case "ea1ChsPeriod":
+		case "ea1ChtPeriod":
+		case "ea1JpnChsDbPeriod":
+			return `${toCjkNum(n)}.`;
+		case "ea1JpnKorPlain":
+			return toHangulNum(n);
+
+		// --- Hebrew letters (1..22) ---
+		case "hebrew2Minus": return `${toHebrew(n)}-`;
+
+		// --- Thai ---
+		case "thaiNumPeriod": return `${toThaiDigits(n)}.`;
+		case "thaiNumParenR": return `${toThaiDigits(n)})`;
+		case "thaiNumParenBoth": return `(${toThaiDigits(n)})`;
+		case "thaiAlphaPeriod": return `${toThaiLetter(n)}.`;
+		case "thaiAlphaParenR": return `${toThaiLetter(n)})`;
+		case "thaiAlphaParenBoth": return `(${toThaiLetter(n)})`;
+
 		default: return `${n}.`;
 	}
+}
+
+// 1..20 → ①..⑳ (U+2460..U+2473). Fall back to `${n}.` past 20.
+export function toCircled(n: number): string {
+	if (n >= 1 && n <= 20) return String.fromCharCode(0x245f + n);
+	return `${n}.`;
+}
+
+// CJK numerals: 一,二,三,四,五,六,七,八,九,十. 11..19 as 十一..十九, 20 as
+// 二十, 21..29 as 二十一..二十九... up to 99. Past that, fall back.
+export function toCjkNum(n: number): string {
+	const digits = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+	if (n < 1) return `${n}`;
+	if (n <= 10) return n === 10 ? '十' : digits[n];
+	if (n < 20) return '十' + digits[n - 10];
+	if (n < 100) {
+		const tens = Math.floor(n / 10);
+		const ones = n % 10;
+		return digits[tens] + '十' + (ones ? digits[ones] : '');
+	}
+	return `${n}`;
+}
+
+// Korean Hangul numerals 1..10 (하나 둘 셋 넷 다섯 여섯 일곱 여덟 아홉 열).
+// Past 10, fall back to the digit.
+export function toHangulNum(n: number): string {
+	const table = ['하나', '둘', '셋', '넷', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
+	if (n >= 1 && n <= 10) return table[n - 1];
+	return `${n}`;
+}
+
+// Hebrew letters א..ת (22 letters). Fall back to `${n}.` past 22.
+export function toHebrew(n: number): string {
+	// 0x05D0 = א.
+	if (n >= 1 && n <= 22) return String.fromCharCode(0x05cf + n);
+	return `${n}`;
+}
+
+// Thai digits ๐..๙ (U+0E50..U+0E59).
+export function toThaiDigits(n: number): string {
+	return String(n)
+		.split('')
+		.map(c => /[0-9]/.test(c) ? String.fromCharCode(0x0e50 + Number(c)) : c)
+		.join('');
+}
+
+// Thai consonants ก..ฮ (U+0E01..U+0E2E, 44 letters). Fall back past 44.
+export function toThaiLetter(n: number): string {
+	if (n >= 1 && n <= 44) return String.fromCharCode(0x0e00 + n);
+	return `${n}`;
 }
 
 export function toAlpha(n: number): string {
