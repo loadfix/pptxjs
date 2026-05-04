@@ -4,8 +4,39 @@ Tracked work for this fork. Move entries into the "Done" section below as they s
 
 ## Open
 
-_None tracked yet._
+Remaining gaps after waves 1–5. Split into "possible follow-ups" and "deliberate non-goals" — items in the second group need a new conversation before starting, not just an agent.
+
+### Possible follow-ups
+
+- **Richer notes rendering.** `renderNotesBlock` applies the notesMaster's level-1 `defRPr` to a flat `<div>`. Full fidelity would walk the notes slide's shapes and paragraphs through the main renderer pipeline, including body placeholders sized against the notes master's slide size (usually 6.5×10").
+- **Handout master rendering.** Loaded by `src/presentation.ts` but never rendered — belongs in a print-handouts feature, not the default renderer.
+- **Gradient / pattern / blip strokes on CSS paths.** Wave 5 made SVG strokes paint with full fidelity via `fillToSvgPaint`. CSS `border:` emissions (degenerate lines + plain rectangles without `presetGeom`/`custGeom`) still fall back to an approximated solid because CSS can't take `url(#id)` for a border. Rendering these shapes as inline SVG even when they have no path geometry would close the gap — but changes the emitted DOM for every shape.
+- **Tile offset/scale on blipFill tiles.** Tile `tx/ty/sx/sy/flip/algn` currently approximate via CSS `background-position` percentages. True tile positioning requires probing the image's natural pixel size, which needs an `Image` load → `await decode()` dance.
+- **Diagonal cell borders inside merged table cells.** Diagonals render per-cell; they don't stretch across merged (`hMerge`/`vMerge`-hidden) cells. Fixable with a table-wide SVG overlay.
+- **SmartArt with no drawing cache.** When `diagrams/drawingN.xml` is absent the frame falls back to a `[SmartArt]` placeholder. A proper layout engine that reads `data1.xml` + `layout1.xml` would produce correct visuals.
+- **`softEdge` alpha mask.** Currently approximated as `filter: blur()` (blurs content too). Proper implementation needs an SVG `feGaussianBlur` + `feComposite` alpha mask sandwich.
+- **`duotone` via `feColorMatrix`.** Currently approximated via a `mix-blend-mode: multiply` overlay. Proper implementation: inline SVG filter mapping luminance to a two-color ramp.
+- **biLevel image filter.** Currently approximated via `grayscale(1) brightness() contrast(1000)`. Proper: SVG `feComponentTransfer` with a discrete threshold table.
+- **Arrow heads with `none` `type` attribute** — already handled. `stealth` / `diamond` / `oval` markers scale by `w`/`len`; if a deck relies on exact pixel-width arrow sizes they may look slightly off.
+- **custGeom `darken` / `lighten` path fill modes.** Currently fall through to `norm`. Proper: apply a CSS `filter: brightness()` to the SVG path based on shape fill luminance.
+- **`<p14:sectionLst>` UI affordances.** Sections are parsed into `Presentation.sections` but the demo doesn't render them. A host could offer a jump-to-section drawer.
+- **Per-master tableStyles.** `pres.tableStyles` is a single global map. Multi-master decks with different `tableStyles.xml` contents per master aren't supported; this is an OOXML-structural limitation (tableStyles lives at the presentation level, not per-master).
+
+### Deliberate non-goals
+
+Out of scope for pptxjs in its current form. Don't start these without a design conversation first — each would significantly change the library's shape.
+
+- **Animations & transitions** (`<p:timing>`, entrance/exit effects, build order). pptxjs renders a static view; animation playback is its own project.
+- **Encrypted / password-protected decks.** Requires the OOXML encryption spec + a crypto path in `OpenXmlPackage`. The Python-side equivalent (in python-pptx) is also out of scope. Users should decrypt externally and re-save.
+- **EMF / WMF image rasterization.** Browsers don't render these natively. Rasterizing would require a JS parser (~big) or a server-side round-trip. Currently `mime.ts` returns `application/octet-stream` so the image slot stays empty.
+- **Office Math (`<m:oMath>`) / equations.** MathML rendering is a separate problem space. Could be lowered to MathML in supporting browsers as a follow-up, but the conversion isn't trivial.
+- **Full OLE object preview.** Embedded workbooks / docs / equations. Rendering the `<p:oleObj><p:pic>` cached image would be straightforward (piggyback on the picture pipeline); rendering the embedded payload itself is separate projects.
+- **Linked (not embedded) media.** `r:link` instead of `r:embed`. Resolving external references requires caller-side fetching; out of scope for the package-only renderer.
+- **Speaker narration audio / video playback.** The current option set (`renderNotes`, `renderComments`) doesn't extend to timed media.
+- **3D shape bevels / `<a:sp3d>`.** CSS `perspective` / 3D transforms would need matrix composition from the OOXML 3D scene — feasible but large, and rare in real decks.
 
 ## Done
 
-_None tracked yet._
+- Chart and SmartArt graphic-frame fallback rendering (`feat/p8-chart-smartart-fallback`). Charts emit their cached preview image when present, else a `[Chart]` placeholder at the frame position. SmartArt frames expand the sibling `diagrams/drawingN.xml` DrawingML cache through the standard shape pipeline (offset by the frame origin), falling back to a `[SmartArt]` placeholder when no drawing cache exists.
+- Hyperlink rendering (P9, Wave 2): external URLs and intra-deck slide jumps on text runs, shapes, and images are wrapped in `<a>` anchors. External links use `target="_blank" rel="noopener noreferrer"`; intra-deck jumps (ppaction hlinkshowjump + slide-to-slide rels) become `#slide-N` fragments. URL scheme whitelist (http/https/mailto/tel + fragments/relatives) rejects `javascript:` and other unsafe targets.
+- Graceful malformed-deck handling (Wave 4, A6, `feat/w4a6-errors`). Per-slide try/catch in `Presentation.load`, `Slide.parseError` + red banner rendering, per-shape try/catch in `spTree` walkers, `Options.onSlideError` callback, and a `[pptxjs]` prefix on JSZip failures in `OpenXmlPackage.load`. `parseError` text inserted via `textContent` only.
