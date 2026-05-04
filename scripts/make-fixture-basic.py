@@ -377,6 +377,50 @@ lnSpc = etree.SubElement(pPr, qn("a:lnSpc"))
 etree.SubElement(lnSpc, qn("a:spcPct")).set("val", "150000")
 # Re-order: lnSpc must appear before other children per the schema; since this
 # is a fresh pPr the order will be correct.
+# Text-frame body-property slide — exercises <a:bodyPr> semantics:
+# insets/padding, vertical anchor, wrap="none". python-pptx's text_frame
+# helpers only expose a handful of these, so we poke the bodyPr element
+# directly for anchor / wrap.
+textframe_slide = prs.slides.add_slide(prs.slide_layouts[5])
+textframe_slide.shapes.title.text = "Text frame"
+
+
+def _set_bodypr_attr(tb, name, value):
+    bodyPr = tb.text_frame._txBody.bodyPr
+    bodyPr.set(name, value)
+
+
+# 1) Center-anchored text inside a tall box — anchor="ctr" pushes lines to
+#    the vertical middle, bordered so the frame edges are visible.
+ctr_tb = textframe_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(0.5), Inches(1.8), Inches(3), Inches(2.5)
+)
+ctr_tb.fill.background()
+ctr_tb.line.color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+ctr_tb.text_frame.text = "Centered vertically"
+_set_bodypr_attr(ctr_tb, "anchor", "ctr")
+
+# 2) Extra padding — big insets on all sides, anchored to the top.
+pad_tb = textframe_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(4), Inches(1.8), Inches(3), Inches(2.5)
+)
+pad_tb.fill.solid()
+pad_tb.fill.fore_color.rgb = RGBColor(0xE8, 0xEE, 0xF7)
+pad_tb.line.color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+pad_tb.text_frame.text = "Wide insets around this text."
+# ~0.5" on all sides.
+for attr in ("lIns", "tIns", "rIns", "bIns"):
+    _set_bodypr_attr(pad_tb, attr, "457200")
+
+# 3) No-wrap box — wrap="none" lets the text overflow horizontally.
+nowrap_tb = textframe_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(0.5), Inches(4.5), Inches(3), Inches(0.8)
+)
+nowrap_tb.fill.background()
+nowrap_tb.line.color.rgb = RGBColor(0xC0, 0x50, 0x4D)
+nowrap_tb.text_frame.text = "This line should not wrap even though it is long."
+_set_bodypr_attr(nowrap_tb, "wrap", "none")
+
 # Slide with a chart — exercises the chart graphicFrame fallback path.
 # python-pptx doesn't emit a cached preview image, so rendering is expected
 # to show the "[Chart]" placeholder; the point of the fixture is to

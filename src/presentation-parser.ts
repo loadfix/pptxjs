@@ -7,12 +7,14 @@ import {
 	RunStyle,
 	ParaStyle,
 	LevelStyles,
+	BodyProperties,
 	emptyRunStyle,
 	emptyParaStyle,
 	emptyLevelStyles,
 	parseRunProps,
 	parseParaProps,
 	parseLevelStyles,
+	parseBodyPr,
 	mergeRunStyle,
 	mergeParaStyle,
 } from './text-style';
@@ -226,6 +228,10 @@ export interface Shape {
 	// Consumed by the renderer so it can skip sldNum/ftr/hdr/dt placeholders
 	// when the slide's <p:hf> flag disables them.
 	phType: string | null;
+	// Parsed <a:bodyPr> from <p:txBody>. Null when the shape has no text body
+	// or the element was absent. Drives text-frame insets, vertical anchor,
+	// wrap, column count, writing-mode, and autofit scaling.
+	bodyPr: BodyProperties | null;
 }
 
 // Minimal <a:custGeom> representation — a single path with the local
@@ -974,6 +980,7 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 	const txBody = firstChildNS(sp, A_NS.p, "txBody");
 	const shapeLstStyle = txBody ? firstChildNS(txBody, A_NS.a, "lstStyle") : null;
 	const shapeLevelStyles = parseLevelStyles(shapeLstStyle, ctx.clrMap, ctx.theme);
+	const bodyPr = txBody ? parseBodyPr(firstChildNS(txBody, A_NS.a, "bodyPr")) : null;
 
 	const paragraphs: Paragraph[] = [];
 	if (txBody) {
@@ -1028,6 +1035,7 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 		flipH: frame?.flipH ?? false,
 		flipV: frame?.flipV ?? false,
 		phType,
+		bodyPr,
 	};
 }
 
