@@ -71,6 +71,79 @@
             margin: 2rem auto;
             max-width: 600px;
         }
+
+        /* Sections drawer on the left of the viewport. Uses <details>/<summary>
+           for collapse — matches the project's minimalist toolbar style and
+           avoids pulling in Bootstrap JS collapse components. Hidden via the
+           .d-none toggle when the deck carries no sections. */
+        #sections-drawer {
+            width: 240px;
+            min-width: 240px;
+            max-width: 240px;
+            background: #f8f9fa;
+            border-right: 1px solid #dee2e6;
+            overflow-y: auto;
+        }
+        #sections-drawer[open] {
+            /* `details` defaults to inline flow; force block so the flex
+               parent sizes it correctly. */
+            display: block;
+        }
+        #sections-drawer summary {
+            padding: 0.75rem 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: #e9ecef;
+            border-bottom: 1px solid #dee2e6;
+            list-style: none;
+            user-select: none;
+        }
+        #sections-drawer summary::-webkit-details-marker {
+            display: none;
+        }
+        #sections-drawer summary::before {
+            content: "\25B8"; /* black right-pointing small triangle */
+            display: inline-block;
+            margin-right: 0.4rem;
+            transition: transform 120ms ease;
+        }
+        #sections-drawer[open] summary::before {
+            transform: rotate(90deg);
+        }
+        #sections-header {
+            padding: 0.5rem 1rem;
+            color: #6c757d;
+            font-size: 0.85rem;
+            border-bottom: 1px solid #dee2e6;
+        }
+        #sections-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+        #sections-list button {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 0.5rem 1rem;
+            border: none;
+            background: transparent;
+            color: #212529;
+            border-bottom: 1px solid #f1f3f5;
+            cursor: pointer;
+        }
+        #sections-list button:hover {
+            background: #e9ecef;
+        }
+        #sections-list button.active {
+            background: #cfe2ff;
+            font-weight: 600;
+        }
+        #sections-list .slide-range {
+            color: #6c757d;
+            font-size: 0.8rem;
+            margin-left: 0.25rem;
+        }
     </style>
 </head>
 
@@ -100,14 +173,26 @@
         <div class="ms-auto text-muted small">Drag &amp; drop a .pptx anywhere to load</div>
     </div>
 
-    <div id="document-container" class="overflow-auto flex-grow-1 scaled">
-        <div class="drop-hint" id="dropHint">
-            Choose a <code>.pptx</code> file above, or drag one into this window.
+    <div class="d-flex flex-grow-1 overflow-hidden">
+        <details id="sections-drawer" class="d-none no-print" open>
+            <summary>Sections</summary>
+            <div id="sections-header"></div>
+            <ul id="sections-list"></ul>
+        </details>
+
+        <div id="document-container" class="overflow-auto flex-grow-1 scaled">
+            <div class="drop-hint" id="dropHint">
+                Choose a <code>.pptx</code> file above, or drag one into this window.
+            </div>
         </div>
     </div>
 
     <script>
         let currentDocument = null;
+        let currentPresentation = null;
+        // IntersectionObserver instance for the active-section highlight.
+        // Rebuilt on every render so it watches the latest <section> nodes.
+        let slideObserver = null;
         const pptxOptions = Object.assign({}, pptx.defaultOptions ?? {});
 
         const container = document.querySelector("#document-container");
@@ -115,6 +200,119 @@
         const loadButton = document.querySelector("#loadButton");
         const scaleToggle = document.querySelector("#scaleToggle");
         const dropHint = document.querySelector("#dropHint");
+        const sectionsDrawer = document.querySelector("#sections-drawer");
+        const sectionsHeader = document.querySelector("#sections-header");
+        const sectionsList = document.querySelector("#sections-list");
+
+        function formatRange(indices) {
+            // slideIndices from the parser are 0-based; show 1-based ranges.
+            if (indices.length === 0) return "(empty)";
+            const first = indices[0] + 1;
+            const last = indices[indices.length - 1] + 1;
+            // Non-contiguous sections are rare but possible when slides get
+            // reordered; fall back to count-only rather than misleading range.
+            const isContiguous = indices.every((v, i) => v === indices[0] + i);
+            return isContiguous
+                ? (first === last ? `(${first})` : `(${first}-${last})`)
+                : `(${indices.length} slides)`;
+        }
+
+        function buildSectionsDrawer(presentation) {
+            // Tear down any prior observer before rebuilding.
+            if (slideObserver) {
+                slideObserver.disconnect();
+                slideObserver = null;
+            }
+            sectionsList.innerHTML = "";
+
+            const slides = presentation.slides ?? [];
+            const sections = presentation.sections ?? [];
+
+            if (sections.length === 0) {
+                sectionsHeader.textContent =
+                    `${slides.length} slide${slides.length === 1 ? "" : "s"}, no sections`;
+                sectionsDrawer.classList.add("d-none");
+                return;
+            }
+
+            sectionsDrawer.classList.remove("d-none");
+            sectionsHeader.textContent =
+                `${slides.length} slide${slides.length === 1 ? "" : "s"} in ` +
+                `${sections.length} section${sections.length === 1 ? "" : "s"}`;
+
+            // Map each slide index to the section that contains it, so the
+            // IntersectionObserver can flip the active button without a
+            // linear scan.
+            const indexToSectionIdx = new Map();
+
+            sections.forEach((sec, secIdx) => {
+                const li = document.createElement("li");
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.dataset.sectionIdx = String(secIdx);
+                btn.textContent = sec.name || `Section ${secIdx + 1}`;
+                const range = document.createElement("span");
+                range.className = "slide-range";
+                range.textContent = " " + formatRange(sec.slideIndices);
+                btn.appendChild(range);
+                btn.addEventListener("click", () => {
+                    const first = sec.slideIndices[0];
+                    if (first === undefined) return;
+                    const target = container.querySelector(
+                        `section[data-slide-index="${first}"]`,
+                    );
+                    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+                });
+                li.appendChild(btn);
+                sectionsList.appendChild(li);
+
+                for (const slideIdx of sec.slideIndices) {
+                    indexToSectionIdx.set(slideIdx, secIdx);
+                }
+            });
+
+            // Active-section highlight: observe each <section> slide and
+            // flip the matching button to .active when the slide is the
+            // "most visible" one in the viewport. Using root=container keeps
+            // the math honest when the container scrolls rather than the
+            // window.
+            const setActive = (secIdx) => {
+                for (const b of sectionsList.querySelectorAll("button")) {
+                    b.classList.toggle("active", b.dataset.sectionIdx === String(secIdx));
+                }
+            };
+
+            // Track visibility ratios so we can pick the currently-dominant
+            // slide even when multiple are partly visible.
+            const ratios = new Map();
+            slideObserver = new IntersectionObserver(
+                (entries) => {
+                    for (const e of entries) {
+                        const idx = Number(e.target.dataset.slideIndex);
+                        if (Number.isNaN(idx)) continue;
+                        ratios.set(idx, e.isIntersecting ? e.intersectionRatio : 0);
+                    }
+                    let bestIdx = -1;
+                    let bestRatio = 0;
+                    for (const [idx, r] of ratios) {
+                        if (r > bestRatio) { bestRatio = r; bestIdx = idx; }
+                    }
+                    if (bestIdx >= 0) {
+                        const secIdx = indexToSectionIdx.get(bestIdx);
+                        if (secIdx !== undefined) setActive(secIdx);
+                    }
+                },
+                {
+                    root: container,
+                    // Sample at several thresholds so the dominant slide
+                    // flips cleanly when scrolling through.
+                    threshold: [0, 0.25, 0.5, 0.75, 1],
+                },
+            );
+            for (const sec of container.querySelectorAll("section[data-slide-index]")) {
+                slideObserver.observe(sec);
+            }
+        }
 
         async function renderPptx(file) {
             currentDocument = file;
@@ -123,7 +321,9 @@
             // there, it gets removed. No extra DOM cleanup needed.
             try {
                 const res = await pptx.renderAsync(currentDocument, container, null, pptxOptions);
+                currentPresentation = res;
                 console.log("pptx: finished", res);
+                buildSectionsDrawer(res);
             } catch (err) {
                 console.error("pptx: failed to render", err);
                 container.innerHTML = '';
@@ -131,6 +331,7 @@
                 msg.className = 'alert alert-danger m-3';
                 msg.textContent = 'Failed to render: ' + (err?.message ?? err);
                 container.appendChild(msg);
+                sectionsDrawer.classList.add("d-none");
             }
         }
 

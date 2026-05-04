@@ -722,6 +722,52 @@ sldIdLst = prs.element.find(
 if sldIdLst is not None and len(sldIdLst) > 0:
     sldIdLst[-1].set("show", "0")
 
+# Add <p:extLst> containing a <p14:sectionLst> so the fixture exercises the
+# Wave 5 A2 sections parser and the demo's sections drawer. Groups the 20
+# slides into four named sections with realistic ranges. Section uses the
+# PresentationML 2010 extensions namespace (p14). Each <p14:section> holds a
+# <p14:sldIdLst> whose <p14:sldId> entries reference the matching
+# <p:sldId>/@id values from the presentation's <p:sldIdLst>.
+P_NS_URI = "http://schemas.openxmlformats.org/presentationml/2006/main"
+P14_NS_URI = "http://schemas.microsoft.com/office/powerpoint/2010/main"
+SECTION_EXT_URI = "{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"
+
+# Collect the ordered sldId @id values (20 entries — last one is hidden).
+_sld_ids = [s.get("id") for s in sldIdLst]
+
+# Four sections covering the full deck, by @id. Names are chosen to echo
+# the content groups (title/basics, visuals, typography, misc).
+_section_defs = [
+    ("Introduction", _sld_ids[0:2]),
+    ("Visuals & Effects", _sld_ids[2:10]),
+    ("Typography & Text", _sld_ids[10:14]),
+    ("Tables, Charts & Extras", _sld_ids[14:]),
+]
+
+# Remove any existing <p:extLst> to stay idempotent across re-runs.
+for existing_ext in prs.element.findall(f"{{{P_NS_URI}}}extLst"):
+    prs.element.remove(existing_ext)
+
+extLst = etree.SubElement(prs.element, f"{{{P_NS_URI}}}extLst")
+ext = etree.SubElement(extLst, f"{{{P_NS_URI}}}ext", uri=SECTION_EXT_URI)
+# nsmap on the parent doesn't retroactively declare p14, so register it on
+# sectionLst itself via etree.SubElement with an explicit nsmap.
+sectionLst = etree.SubElement(
+    ext,
+    f"{{{P14_NS_URI}}}sectionLst",
+    nsmap={"p14": P14_NS_URI},
+)
+for idx, (name, ids) in enumerate(_section_defs):
+    sec = etree.SubElement(
+        sectionLst,
+        f"{{{P14_NS_URI}}}section",
+        name=name,
+        id=f"{{00000000-0000-0000-0000-{idx:012d}}}",
+    )
+    sldIdLst_p14 = etree.SubElement(sec, f"{{{P14_NS_URI}}}sldIdLst")
+    for sid in ids:
+        etree.SubElement(sldIdLst_p14, f"{{{P14_NS_URI}}}sldId", id=sid)
+
 OUT.parent.mkdir(parents=True, exist_ok=True)
 prs.save(OUT)
 
