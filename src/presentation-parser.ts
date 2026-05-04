@@ -54,6 +54,11 @@ export interface Slide {
 	// Review comments on this slide. Always an array — empty when the slide
 	// has no comments part.
 	comments: import('./comments').Comment[];
+	// When the slide could not be parsed, this carries the error's message so
+	// the renderer can emit a visible error banner in place of the slide
+	// contents. Null on healthy slides. Populated by Presentation.load when
+	// parseSlide (or any of the per-slide resolution steps) throws.
+	parseError: string | null;
 }
 
 export interface HeaderFooterFlags {
@@ -465,6 +470,7 @@ export function parseSlide(doc: Document, index: number, ctx: SlideParseContext)
 		datetimeText: phText.dt,
 		notes: null,
 		comments: [],
+		parseError: null,
 	};
 }
 
@@ -523,20 +529,27 @@ export function parseStaticShapes(doc: Document, ctx: SlideParseContext): ShapeL
 function walkSpTreeStatic(container: Element, out: ShapeLike[], ctx: SlideParseContext, t: Transform = IDENTITY): void {
 	for (const child of Array.from(container.children)) {
 		if (child.namespaceURI !== A_NS.p) continue;
-		if (child.localName === "sp" || child.localName === "cxnSp") {
-			if (isPlaceholder(child)) continue;
-			const s = parseShape(child, ctx);
-			if (s) { applyTransform(s, t); out.push(s); }
-		} else if (child.localName === "pic") {
-			if (isPlaceholder(child)) continue;
-			const p = parsePic(child, ctx);
-			if (p) { applyTransform(p, t); out.push(p); }
-		} else if (child.localName === "grpSp") {
-			const grpT = composeTransforms(t, transformFromGrpSp(child));
-			walkSpTreeStatic(child, out, ctx, grpT);
-		} else if (child.localName === "graphicFrame") {
-			const gfShape = parseGraphicFrame(child, ctx);
-			if (gfShape) { applyTransform(gfShape, t); out.push(gfShape); }
+		// Per-shape isolation: one mangled shape shouldn't abort parsing of
+		// its siblings. Drop the shape + warn; grpSp failures drop the whole
+		// group (but not surrounding shapes).
+		try {
+			if (child.localName === "sp" || child.localName === "cxnSp") {
+				if (isPlaceholder(child)) continue;
+				const s = parseShape(child, ctx);
+				if (s) { applyTransform(s, t); out.push(s); }
+			} else if (child.localName === "pic") {
+				if (isPlaceholder(child)) continue;
+				const p = parsePic(child, ctx);
+				if (p) { applyTransform(p, t); out.push(p); }
+			} else if (child.localName === "grpSp") {
+				const grpT = composeTransforms(t, transformFromGrpSp(child));
+				walkSpTreeStatic(child, out, ctx, grpT);
+			} else if (child.localName === "graphicFrame") {
+				const gfShape = parseGraphicFrame(child, ctx);
+				if (gfShape) { applyTransform(gfShape, t); out.push(gfShape); }
+			}
+		} catch (err) {
+			if (typeof console !== "undefined") console.warn(`[pptxjs] shape <${child.localName}> failed to parse, dropping:`, err);
 		}
 	}
 }
@@ -616,25 +629,32 @@ function applyTransform(shape: ShapeLike, t: Transform): void {
 function walkSpTree(container: Element, out: ShapeLike[], ctx: SlideParseContext, t: Transform = IDENTITY): void {
 	for (const child of Array.from(container.children)) {
 		if (child.namespaceURI !== A_NS.p) continue;
-		if (child.localName === "sp") {
-			const s = parseShape(child, ctx);
-			if (s) { applyTransform(s, t); out.push(s); }
-		} else if (child.localName === "pic") {
-			const p = parsePic(child, ctx);
-			if (p) { applyTransform(p, t); out.push(p); }
-		} else if (child.localName === "grpSp") {
-			// Nested group — compose the group's own transform with the
-			// accumulated one before recursing into children.
-			const grpT = composeTransforms(t, transformFromGrpSp(child));
-			walkSpTree(child, out, ctx, grpT);
-		} else if (child.localName === "graphicFrame") {
-			const gfShape = parseGraphicFrame(child, ctx);
-			if (gfShape) { applyTransform(gfShape, t); out.push(gfShape); }
-		} else if (child.localName === "cxnSp") {
-			// Connector shapes — lines, arrows, etc. We reuse parseShape but
-			// cxnSp has no <a:txBody> and typically renders as a line.
-			const s = parseShape(child, ctx);
-			if (s) { applyTransform(s, t); out.push(s); }
+		// Per-shape isolation: one mangled shape shouldn't abort parsing of
+		// its siblings. Drop the shape + warn; grpSp failures drop the whole
+		// group (but not surrounding shapes).
+		try {
+			if (child.localName === "sp") {
+				const s = parseShape(child, ctx);
+				if (s) { applyTransform(s, t); out.push(s); }
+			} else if (child.localName === "pic") {
+				const p = parsePic(child, ctx);
+				if (p) { applyTransform(p, t); out.push(p); }
+			} else if (child.localName === "grpSp") {
+				// Nested group — compose the group's own transform with the
+				// accumulated one before recursing into children.
+				const grpT = composeTransforms(t, transformFromGrpSp(child));
+				walkSpTree(child, out, ctx, grpT);
+			} else if (child.localName === "graphicFrame") {
+				const gfShape = parseGraphicFrame(child, ctx);
+				if (gfShape) { applyTransform(gfShape, t); out.push(gfShape); }
+			} else if (child.localName === "cxnSp") {
+				// Connector shapes — lines, arrows, etc. We reuse parseShape but
+				// cxnSp has no <a:txBody> and typically renders as a line.
+				const s = parseShape(child, ctx);
+				if (s) { applyTransform(s, t); out.push(s); }
+			}
+		} catch (err) {
+			if (typeof console !== "undefined") console.warn(`[pptxjs] shape <${child.localName}> failed to parse, dropping:`, err);
 		}
 	}
 }

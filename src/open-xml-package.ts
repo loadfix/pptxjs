@@ -8,7 +8,17 @@ export class OpenXmlPackage {
 	constructor(private _zip: JSZip, public options: OpenXmlPackageOptions) {}
 
 	static async load(input: Blob | any, options: OpenXmlPackageOptions): Promise<OpenXmlPackage> {
-		const zip = await JSZip.loadAsync(input);
+		// JSZip throws for non-zip buffers (e.g. "End of central directory not
+		// found"). Prefix the message with a pptxjs tag so callers can
+		// distinguish "this isn't a valid pptx" from other load errors, while
+		// preserving the underlying cause + message.
+		let zip: JSZip;
+		try {
+			zip = await JSZip.loadAsync(input);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(`[pptxjs] failed to open package (not a valid .pptx/zip): ${msg}`);
+		}
 		return new OpenXmlPackage(zip, options);
 	}
 
