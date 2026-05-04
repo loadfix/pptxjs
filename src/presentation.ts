@@ -105,9 +105,19 @@ interface LayoutBundle {
 	clrMapOvr: ClrMap | null;
 }
 
+export interface NotesSize {
+	cx: number;
+	cy: number;
+}
+
 export class Presentation {
 	slides: Slide[] = [];
 	slideSize: SlideSize = { cx: 9144000, cy: 6858000, type: null, orient: null };
+	// Notes-slide canvas size, from <p:notesSz> in presentation.xml. PowerPoint's
+	// default is 6858000 × 9144000 EMU — i.e. 7.5"×10" portrait, the inverse
+	// aspect of a default 4:3 slide. Used by the notes renderer to size the
+	// .pptx-notes-slide section.
+	notesSize: NotesSize = { cx: 6858000, cy: 9144000 };
 	// rId → resolved URL, merged across all parts (slide/layout/master).
 	embedUrls: Map<string, string> = new Map();
 	// Populated once at load time from ppt/tableStyles.xml. Null when the
@@ -164,6 +174,17 @@ export class Presentation {
 				cy: Number(sldSzEl.getAttribute("cy")) || pres.slideSize.cy,
 				type: typeAttr || null,
 				orient,
+			};
+		}
+
+		// <p:notesSz cx cy/> — separate canvas for the notesSlide part. Typical
+		// value is 6858000×9144000 (7.5"×10" portrait), swapping the cx/cy of a
+		// default 4:3 slide. Absent on hand-authored PPTX; default preserved.
+		const notesSzEl = presDoc.getElementsByTagNameNS(A_NS.p, "notesSz")[0];
+		if (notesSzEl) {
+			pres.notesSize = {
+				cx: Number(notesSzEl.getAttribute("cx")) || pres.notesSize.cx,
+				cy: Number(notesSzEl.getAttribute("cy")) || pres.notesSize.cy,
 			};
 		}
 
@@ -308,6 +329,15 @@ export class Presentation {
 		// the part either exists (presentation has comments somewhere) or it
 		// doesn't, and loadCommentAuthors degrades to an empty map either way.
 		const commentAuthors = await loadCommentAuthors(pkg);
+
+		// Notes-slide parse prep: build the shared SlideParseContext used by
+		// every notesSlide in the deck, plus the parsed notesMaster static
+		// chrome (header/footer/date/sldImg/etc. that should render behind the
+		// speaker-notes body on each page). When the deck has no notesMaster,
+		// notesParsePrep stays null and per-slide notes loading is skipped —
+		// there's nothing sensible to inherit from, and the slide's own notes
+		// body won't resolve placeholder geometry without a master.
+		const notesParsePrep = await buildNotesParsePrep(pkg, pres.notesMaster, pres.embedUrls);
 
 		// Cache image URLs across slides — the same embedded image may be
 		// referenced by multiple slides via separate rIds, but there's one
@@ -488,7 +518,25 @@ export class Presentation {
 
 				// Notes + comments — pulled from the slide's own rels. Both are
 				// optional parts; loaders return null / [] when absent.
-				slide.notes = await loadNotesSlide(pkg, path);
+				// Notes are only parsed when we have a notesParsePrep (i.e. the
+				// deck declared a notesMaster) — without one, parseSlide can't
+				// resolve the placeholder frames that carry the body geometry.
+				if (notesParsePrep) {
+					const loaded = await loadNotesSlide(pkg, path, notesParsePrep.ctx, notesParsePrep.staticShapes);
+					if (loaded) {
+						slide.notes = loaded.notes;
+						// Merge the notes slide's own embeds (rare) + rewrite any
+						// BlipFill rIds on the parsed notes shapes to their
+						// synthetic global keys, the same way slide/layout/master
+						// blip references are rewritten above.
+						rewriteBlipRIds(
+							slide.notes.shapes,
+							loaded.notes.embedUrls,
+							loaded.notesPath,
+							pres.embedUrls,
+						);
+					}
+				}
 				slide.comments = await loadComments(pkg, path, commentAuthors);
 				pres.slides.push(slide);
 			} catch (err) {
@@ -719,6 +767,87 @@ async function loadHandoutMaster(
 ): Promise<MasterBundle | null> {
 	const loaded = await loadMasterBundle(pkg, presPath, presRels, HANDOUT_MASTER_REL_TYPE);
 	return loaded ? loaded.bundle : null;
+}
+
+interface NotesParsePrep {
+	ctx: SlideParseContext;
+	// Pre-parsed static chrome from the notesMaster — non-placeholder shapes
+	// plus the master's own placeholder frames we keep as the notes "page
+	// decoration" (sldImg border, footer chrome, etc.). Prepended to every
+	// notes slide's own parsed shapes so the page layout is complete.
+	staticShapes: ShapeLike[];
+}
+
+// Build the reusable parse context + master chrome shapes for notes-slide
+// rendering. Returns null when the deck has no notesMaster — without one,
+// there's no placeholder frame cascade for the notes body to inherit and
+// parseSlide would emit zero-sized shapes. Caller should simply skip notes
+// loading in that case.
+//
+// `presEmbedUrls` is the presentation-level embed URL map; images carried
+// by the notesMaster (rare — e.g. a logo) are registered into it with the
+// synthetic `${path}#${rId}` keying scheme used by every other part.
+async function buildNotesParsePrep(
+	pkg: OpenXmlPackage,
+	notesMaster: NotesMasterBundle | null,
+	presEmbedUrls: Map<string, string>,
+): Promise<NotesParsePrep | null> {
+	if (!notesMaster || !notesMaster.doc || !notesMaster.path) return null;
+
+	// The notesMaster's own <p:notesStyle> plays the role the master's
+	// <p:txStyles><p:bodyStyle> plays for regular slides. There is no
+	// distinct title/body/other split on the notesMaster, so we fan the
+	// notesStyle out to all three buckets: the notes body ph has
+	// type="body", but the handful of other ph types on the notesMaster
+	// (sldNum/ftr/hdr/dt/sldImg) also default through `other` in
+	// phTypeToStyleBucket and should share the same text chrome.
+	const textStyles: MasterTextStyles = {
+		title: notesMaster.notesStyle,
+		body: notesMaster.notesStyle,
+		other: notesMaster.notesStyle,
+	};
+
+	// Embed URLs for the notesMaster itself (logos etc.). Registered into
+	// the presentation-wide map so any blip-fill rewrites in the static
+	// shapes resolve through the same cache as slide-level blips.
+	const masterEmbeds = await loadPartImageEmbeds(pkg, notesMaster.path);
+
+	// The notes slide has no intervening "layout" — the cascade is
+	// notesSlide → notesMaster only. An empty layout placeholder map
+	// satisfies SlideParseContext without muddling inheritance.
+	const ctx: SlideParseContext = {
+		layout: emptyPlaceholderMap(),
+		master: notesMaster.placeholders,
+		masterTextStyles: textStyles,
+		theme: notesMaster.theme,
+		clrMap: notesMaster.clrMap,
+		// Re-used per notesSlide: the inner loader swaps in its own map.
+		embedUrls: new Map(),
+	};
+
+	// Parse the notesMaster's non-placeholder static shapes the same way we
+	// parse the slide master's static chrome. Rewrite blip rIds through the
+	// master-local embed map so images resolve at render time.
+	const staticShapes = parseStaticShapes(notesMaster.doc, { ...ctx, embedUrls: masterEmbeds });
+	rewriteBlipRIds(staticShapes, masterEmbeds, notesMaster.path, presEmbedUrls);
+
+	return { ctx, staticShapes };
+}
+
+// Walk a part's relationships, load any <a:blip>-able images into object-URL
+// blobs, and return the rId→URL map. Mirrors the inline `loadSlideEmbeds`
+// used in Presentation.load, but operates on an arbitrary part (master /
+// notesMaster / …) without depending on the per-slide mediaUrlCache.
+async function loadPartImageEmbeds(pkg: OpenXmlPackage, partPath: string): Promise<Map<string, string>> {
+	const urls = new Map<string, string>();
+	const partRels = await pkg.loadRelationships(partPath);
+	for (const rel of partRels.values()) {
+		if (rel.type !== "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image") continue;
+		const mediaPath = resolveRelTarget(partPath, rel.target);
+		const blob = await pkg.loadBlob(mediaPath, imageMimeFromPath(mediaPath));
+		if (blob) urls.set(rel.id, URL.createObjectURL(blob));
+	}
+	return urls;
 }
 
 // Translate a `ppaction://hlinkshowjump?jump=...` URI to a `#slide-N` fragment

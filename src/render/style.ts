@@ -13,16 +13,18 @@ export function makeStyleNode(cls: string, slideW: number, slideH: number): HTML
 .${cls}-shape, .${cls}-pic, .${cls}-table {
 	box-sizing: border-box;
 }
-.${cls}-notes {
-	width: ${slideW}px;
-	margin: -16px auto 24px;
-	padding: 12px 16px;
-	background: #fafafa;
-	border: 1px solid #e0e0e0;
-	border-top: none;
-	font: 13px/1.5 system-ui, sans-serif;
-	color: #333;
-	white-space: pre-wrap;
+.${cls}-notes-slide {
+	position: relative;
+	/* width/height are set inline per-element from the deck's notesSz,
+	   since notes pages can be any size the author chose (the PowerPoint
+	   default is 7.5"x10" portrait, the inverse of a 4:3 slide). */
+	margin: -16px auto 32px;
+	background: #fdfdfd;
+	border: 1px solid #d0d0d0;
+	box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+	overflow: hidden;
+	/* Visually subdue against the main slide so it reads as chrome. */
+	opacity: 0.97;
 }
 .${cls}-comment-pin {
 	width: 20px;
