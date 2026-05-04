@@ -1,9 +1,11 @@
 """Generate a minimal 2-slide .pptx fixture for development."""
 from pathlib import Path
 
+from lxml import etree
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
 OUT = Path(__file__).resolve().parent.parent / "tests" / "render-test" / "basic" / "presentation.pptx"
@@ -74,6 +76,56 @@ data = [("Alice", "Engineer", "92"), ("Bob", "Designer", "88")]
 for r, row in enumerate(data, start=1):
     for c, val in enumerate(row):
         tbl.cell(r, c).text = val
+
+# Typography slide — exercises underline, strike, super/sub, letter-spacing,
+# and paragraph line-spacing. python-pptx's high-level Font only exposes
+# bold/italic/underline/color/size, so we patch the rPr/pPr XML for the rest.
+typo_slide = prs.slides.add_slide(prs.slide_layouts[5])
+typo_slide.shapes.title.text = "Typography"
+typo_tb = typo_slide.shapes.add_textbox(Inches(1), Inches(1.5), Inches(8), Inches(4))
+typo_tf = typo_tb.text_frame
+typo_tf.word_wrap = True
+
+
+def _set_rpr_attr(run, name, value):
+    rPr = run._r.get_or_add_rPr()
+    rPr.set(name, value)
+
+
+# Paragraph 1: plain + underlined + strikethrough runs.
+p1 = typo_tf.paragraphs[0]
+r = p1.add_run(); r.text = "Plain then "
+u = p1.add_run(); u.text = "underlined"; u.font.underline = True
+p1.add_run().text = " then "
+s = p1.add_run(); s.text = "strikethrough"
+_set_rpr_attr(s, "strike", "sngStrike")
+p1.add_run().text = "."
+
+# Paragraph 2: super/sub and letter-spacing.
+p2 = typo_tf.add_paragraph()
+p2.add_run().text = "E = mc"
+sup = p2.add_run(); sup.text = "2"
+_set_rpr_attr(sup, "baseline", "30000")
+p2.add_run().text = ", H"
+sub = p2.add_run(); sub.text = "2"
+_set_rpr_attr(sub, "baseline", "-25000")
+p2.add_run().text = "O, "
+spc = p2.add_run(); spc.text = "l e t t e r   s p a c e d"
+# spc attr is in 1/100 pt — 200 = 2pt.
+_set_rpr_attr(spc, "spc", "200")
+
+# Paragraph 3: 1.5x line-spacing on a wrapping block so you can see the gap.
+p3 = typo_tf.add_paragraph()
+p3.text = (
+    "This paragraph uses 1.5x line spacing so you can see the extra "
+    "vertical room between wrapped lines. Quick brown foxes and lazy dogs."
+)
+# Set a:spcPct on pPr — val is per-mille. 150000 = 1.5x.
+pPr = p3._pPr if p3._pPr is not None else p3._p.get_or_add_pPr()
+lnSpc = etree.SubElement(pPr, qn("a:lnSpc"))
+etree.SubElement(lnSpc, qn("a:spcPct")).set("val", "150000")
+# Re-order: lnSpc must appear before other children per the schema; since this
+# is a fresh pPr the order will be correct.
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 prs.save(OUT)
