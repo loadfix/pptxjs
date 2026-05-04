@@ -5,7 +5,7 @@
 
 import { A_NS } from './namespaces';
 import { firstChildNS } from './xml-utils';
-import { ColorMods } from './color-math';
+import { ColorMods, withAlphaHex } from './color-math';
 import { ClrMap, ThemeColors, resolveColorElement } from './theme';
 
 export interface RunStyle {
@@ -354,7 +354,7 @@ export function parseParaProps(
 		const colorEl = firstColorChild(buClr);
 		if (colorEl) {
 			const r = resolveColorElement(colorEl, clrMap ?? {}, theme);
-			if (r) bulletColorHex = r.colorHex;
+			if (r && r.colorHex) bulletColorHex = withAlphaHex(r.colorHex, r.alpha);
 		}
 	}
 	const buFont = firstChildNS(el, A_NS.a, "buFont");

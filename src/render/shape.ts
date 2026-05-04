@@ -5,6 +5,7 @@ import type { LineStyle, LineEnd } from '../fill';
 import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
 import { renderParagraph, type AutoNumState, type BodyTextContext, type FieldContext } from './text';
 import { solidColorFromFill, fillToCssBackground, lineDashToCss, svgDashArray } from './fill-utils';
+import { withAlphaHex } from '../color-math';
 import { presetToSvgPath } from '../preset-geom';
 import { wrapInHyperlink } from './hyperlink';
 
@@ -258,31 +259,21 @@ function dirDistToOffsetPx(dir60k: number, distEmu: number): { dx: number; dy: n
 	return { dx: distPx * Math.cos(rad), dy: distPx * Math.sin(rad) };
 }
 
-function withAlpha(hex: string, alpha: number | null): string {
-	if (alpha == null || alpha >= 1) return hex;
-	const m = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex);
-	if (!m) return hex;
-	const r = parseInt(m[1], 16);
-	const g = parseInt(m[2], 16);
-	const b = parseInt(m[3], 16);
-	return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, alpha))})`;
-}
-
 function outerShadowToBoxShadow(s: OuterShadow): string {
 	const { dx, dy } = dirDistToOffsetPx(s.dir60k, s.distEmu);
 	const blurPx = emuToPx(s.blurRadEmu);
-	return `${dx.toFixed(2)}px ${dy.toFixed(2)}px ${blurPx.toFixed(2)}px ${withAlpha(s.colorHex, s.alpha)}`;
+	return `${dx.toFixed(2)}px ${dy.toFixed(2)}px ${blurPx.toFixed(2)}px ${withAlphaHex(s.colorHex, s.alpha)}`;
 }
 
 function innerShadowToBoxShadow(s: InnerShadow): string {
 	const { dx, dy } = dirDistToOffsetPx(s.dir60k, s.distEmu);
 	const blurPx = emuToPx(s.blurRadEmu);
-	return `inset ${dx.toFixed(2)}px ${dy.toFixed(2)}px ${blurPx.toFixed(2)}px ${withAlpha(s.colorHex, s.alpha)}`;
+	return `inset ${dx.toFixed(2)}px ${dy.toFixed(2)}px ${blurPx.toFixed(2)}px ${withAlphaHex(s.colorHex, s.alpha)}`;
 }
 
 function glowToBoxShadow(g: Glow): string {
 	const radPx = emuToPx(g.radEmu);
-	return `0 0 ${radPx.toFixed(2)}px ${radPx.toFixed(2)}px ${withAlpha(g.colorHex, g.alpha)}`;
+	return `0 0 ${radPx.toFixed(2)}px ${radPx.toFixed(2)}px ${withAlphaHex(g.colorHex, g.alpha)}`;
 }
 
 function blurToFilter(b: Blur): string {

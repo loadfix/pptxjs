@@ -1,5 +1,6 @@
 import type { Paragraph, Run, TextRun, Slide } from '../presentation-parser';
 import { emuToPx } from './geom';
+import { withAlphaHex } from '../color-math';
 import { wrapInHyperlink } from './hyperlink';
 
 // Counters for auto-numbered bullets within the current shape, keyed by
@@ -254,14 +255,10 @@ function applyRunStyle(el: HTMLElement, s: TextRun['style'], bodyCtx?: BodyTextC
 		el.style.fontSize = `${(s.sizeHundredths / 100) * scale}pt`;
 	}
 
-	// Color + alpha. If alpha is set, fold it into an rgba() value; otherwise
-	// emit the plain hex color.
+	// Color + alpha. If alpha is set, fold it into an `#RRGGBBAA` value
+	// (CSS 8-hex); otherwise emit the plain hex color.
 	if (s.colorHex) {
-		if (s.alpha != null && s.alpha < 1) {
-			el.style.color = hexToRgba(s.colorHex, s.alpha);
-		} else {
-			el.style.color = s.colorHex;
-		}
+		el.style.color = withAlphaHex(s.colorHex, s.alpha);
 	} else if (s.alpha != null && s.alpha < 1) {
 		// No explicit color but alpha present — use opacity as a fallback.
 		el.style.opacity = `${s.alpha}`;
@@ -324,12 +321,3 @@ function applyRunStyle(el: HTMLElement, s: TextRun['style'], bodyCtx?: BodyTextC
 	}
 }
 
-// `#RRGGBB` + alpha in [0,1] → `rgba(r, g, b, a)`.
-function hexToRgba(hex: string, alpha: number): string {
-	const h = hex.startsWith("#") ? hex.slice(1) : hex;
-	if (h.length !== 6) return hex;
-	const r = parseInt(h.slice(0, 2), 16);
-	const g = parseInt(h.slice(2, 4), 16);
-	const b = parseInt(h.slice(4, 6), 16);
-	return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}

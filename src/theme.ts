@@ -94,14 +94,67 @@ export function parseTheme(themeDoc: Document): ThemeColors {
 			if (v && /^[0-9a-fA-F]{6}$/.test(v)) out.scheme[slot] = `#${v}`;
 			continue;
 		}
-		// sysClr carries a `lastClr` with the system color's resolved value.
 		const sys = firstChildNS(slotEl, A_NS.a, "sysClr");
 		if (sys) {
-			const v = sys.getAttribute("lastClr");
-			if (v && /^[0-9a-fA-F]{6}$/.test(v)) out.scheme[slot] = `#${v}`;
+			const resolved = resolveSysClr(sys);
+			if (resolved) out.scheme[slot] = resolved;
 		}
 	}
 	return out;
+}
+
+// ECMA-376 §20.1.10.58 ST_SystemColorVal — map a <a:sysClr val="..."/> name to
+// its canonical Windows system color. PowerPoint writes a `lastClr` attribute
+// as a cache of the last-seen resolved value at save time; we use the spec
+// table first and fall back to `lastClr` so older / unusual names still
+// resolve. Keys are the exact `val` tokens (camelCase).
+const SYS_COLOR_TABLE: Record<string, string> = {
+	scrollBar: '#C8C8C8',
+	background: '#FFFFFF',
+	activeCaption: '#99B4D1',
+	inactiveCaption: '#BFCDDB',
+	menu: '#F0F0F0',
+	window: '#FFFFFF',
+	windowFrame: '#646464',
+	menuText: '#000000',
+	windowText: '#000000',
+	captionText: '#000000',
+	activeBorder: '#B4B4B4',
+	inactiveBorder: '#F4F7FC',
+	appWorkspace: '#ABABAB',
+	highlight: '#3399FF',
+	highlightText: '#FFFFFF',
+	btnFace: '#F0F0F0',
+	btnShadow: '#A0A0A0',
+	grayText: '#6D6D6D',
+	btnText: '#000000',
+	inactiveCaptionText: '#000000',
+	btnHighlight: '#FFFFFF',
+	'3dDkShadow': '#696969',
+	'3dLight': '#E3E3E3',
+	infoText: '#000000',
+	infoBk: '#FFFFE1',
+	hotLight: '#0066CC',
+	gradientActiveCaption: '#B9D1EA',
+	gradientInactiveCaption: '#D7E4F2',
+	menuHighlight: '#3399FF',
+	menuBar: '#F0F0F0',
+	// Legacy / alternative spellings. `3dFace` / `3dShadow` / `3dHighlight`
+	// aren't part of ST_SystemColorVal but appear in the wild.
+	'3dFace': '#F0F0F0',
+	'3dShadow': '#A0A0A0',
+	'3dHighlight': '#FFFFFF',
+};
+
+// Resolve an <a:sysClr val="..." lastClr="..."/> to `#RRGGBB`. Prefers the
+// ECMA-376 table; falls back to `lastClr` when `val` is unknown. Returns
+// null if neither source produces a usable color.
+function resolveSysClr(el: Element): string | null {
+	const val = el.getAttribute("val");
+	if (val && SYS_COLOR_TABLE[val]) return SYS_COLOR_TABLE[val];
+	const last = el.getAttribute("lastClr");
+	if (last && /^[0-9a-fA-F]{6}$/.test(last)) return `#${last}`;
+	return null;
 }
 
 export function parseClrMap(masterDoc: Document): ClrMap {
@@ -146,9 +199,11 @@ export function resolveSchemeClr(slot: string, clrMap: ClrMap, theme: ThemeColor
 	return theme.scheme[resolvedSlot as SchemeSlot] ?? null;
 }
 
-// ECMA-376 §20.1.10.47 preset color table. These overlap with CSS named
-// colors for the entries PPTX actually emits, so we ship the common subset
-// here. Keys are lowercased, values are `#RRGGBB`.
+// ECMA-376 §20.1.10.47 ST_PresetColorVal — the 140 canonical preset color
+// names plus common aliases ("darkBlue" ↔ "dkBlue", "lightGray" ↔ "ltGray",
+// "mediumBlue" ↔ "medBlue", "grey" ↔ "gray") that appear in PPTX in the
+// wild. Values are the CSS/W3C named-color hex codes. Keys are lowercased
+// for case-insensitive lookup.
 const PRESET_COLORS: Record<string, string> = {
 	aliceblue: '#F0F8FF', antiquewhite: '#FAEBD7', aqua: '#00FFFF', aquamarine: '#7FFFD4',
 	azure: '#F0FFFF', beige: '#F5F5DC', bisque: '#FFE4C4', black: '#000000',
@@ -207,8 +262,13 @@ function presetColorHex(name: string | null): string | null {
 	return PRESET_COLORS[name.toLowerCase()] ?? null;
 }
 
-// HSL (OOXML) → RGB hex. hue is 1/60000ths of a degree; sat / lum are 1/1000ths
-// of a percent (i.e. per-mille).
+// HSL (OOXML §20.1.2.3.14) → RGB hex.
+//   hue: 1/60000ths of a degree (0..21600000, i.e. 60000 × 360)
+//   sat: per-mille (0..100000)
+//   lum: per-mille (0..100000)
+// Internally we normalise to the 0..1 representation used by the shared
+// hue2rgb helper. Sanity check: hue=0, sat=100000, lum=50000 → pure red
+// (#FF0000). hue=21600000 (360°) wraps to 0 and yields the same red.
 function hslOoxmlToHex(hue: number, sat: number, lum: number): string {
 	const h = ((hue / 60000) % 360 + 360) % 360 / 360;
 	const s = Math.max(0, Math.min(1, sat / 100000));
@@ -300,11 +360,14 @@ export function resolveColorElement(
 			return { colorHex: applyMods(hex, mods), schemeSlot: null, mods, alpha };
 		}
 		case 'sysClr': {
-			const last = el.getAttribute("lastClr");
-			if (!last || !/^[0-9a-fA-F]{6}$/.test(last)) return null;
-			return { colorHex: applyMods(`#${last}`, mods), schemeSlot: null, mods, alpha };
+			const base = resolveSysClr(el);
+			if (!base) return null;
+			return { colorHex: applyMods(base, mods), schemeSlot: null, mods, alpha };
 		}
 		case 'scrgbClr': {
+			// ECMA-376 §20.1.2.3.30 — r/g/b are per-mille sRGB components,
+			// 0..100000 (0% .. 100%). Convert via Math.round(n/100000 * 255).
+			// Sanity: r=100000 → 1.0 * 255 = 255 (0xFF); r=50000 → 127.
 			const r = parsePercent(el.getAttribute("r"));
 			const g = parsePercent(el.getAttribute("g"));
 			const b = parsePercent(el.getAttribute("b"));
