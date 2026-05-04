@@ -11,6 +11,12 @@
 //
 // See README.md in the corpus repo for the matrix that consumes these
 // JSON files.
+//
+// Parameterised manifests (corpus schema `kind: "parameterised"`) are
+// expanded at discovery time via `expandManifest`. One manifest file
+// yielding N axis-combinations becomes N Playwright tests and N
+// result JSONs. No pptx manifests are parameterised today but the
+// runner is wired up for future waves.
 
 import { test, expect } from '@playwright/test';
 import {
@@ -30,6 +36,7 @@ import {
   type AssertionVerdict,
   type RenderAssertion,
 } from './evaluator';
+import { expandManifest, type ExpandedManifest } from './manifest-expander';
 
 // Repo roots. Playwright sets cwd to the project root (where
 // playwright.config.ts lives) before loading specs, so we resolve
@@ -65,7 +72,12 @@ function readToolVersion(): string {
   }
 }
 
-interface Manifest {
+// Minimal local shape — only the fields the runner touches. The full
+// schema lives in ooxml-reference-corpus/features/manifest.schema.json.
+// After `expandManifest`, parameterised manifests carry an `_expansion`
+// diagnostic; we don't consume it here but it rides along into the
+// manifest object for traceability.
+interface Manifest extends ExpandedManifest {
   id: string;
   title?: string;
   fixtures: { machine: string };
@@ -103,30 +115,85 @@ function aggregateStatus(
   return 'pass';
 }
 
+interface DiscoveryEntry {
+  path: string;
+  manifest: Manifest;
+}
+
+interface DiscoveryError {
+  path: string;
+  parentId: string;
+  error: string;
+}
+
+interface DiscoveryResult {
+  entries: DiscoveryEntry[];
+  errors: DiscoveryError[];
+}
+
 /**
  * Discover every pptx feature manifest that carries a
- * `render_assertions` block. Run at test-discovery time so each one
- * becomes its own Playwright test.
+ * `render_assertions` (or `render_assertions_template`) block, expand
+ * parameterised families, and return one entry per concrete case. Each
+ * entry becomes its own Playwright test.
+ *
+ * Expansion errors (unknown `kind`, empty `parameters`, malformed JSON)
+ * are returned separately so the driver can still surface them as a
+ * visible failing test rather than a silent drop.
  */
-function discoverManifests(): { path: string; manifest: Manifest }[] {
-  if (!existsSync(FEATURES_DIR)) return [];
-  const entries: { path: string; manifest: Manifest }[] = [];
+function discoverManifests(): DiscoveryResult {
+  const entries: DiscoveryEntry[] = [];
+  const errors: DiscoveryError[] = [];
+  if (!existsSync(FEATURES_DIR)) return { entries, errors };
+
   for (const name of readdirSync(FEATURES_DIR)) {
     if (!name.endsWith('.json')) continue;
     if (name.endsWith('.schema.json')) continue;
     const full = join(FEATURES_DIR, name);
-    let parsed: Manifest;
+
+    let raw: unknown;
     try {
-      parsed = JSON.parse(readFileSync(full, 'utf-8')) as Manifest;
-    } catch {
+      raw = JSON.parse(readFileSync(full, 'utf-8'));
+    } catch (e) {
+      errors.push({
+        path: full,
+        parentId: name,
+        error: `Could not parse manifest JSON: ${(e as Error).message}`,
+      });
       continue;
     }
-    if (!parsed.render_assertions || parsed.render_assertions.length === 0) {
+
+    // Skip manifests with no render checks at all — authoring-side
+    // assertions (the `assertions` block) are validated by the Python
+    // runner, not this one.
+    const parent = (raw ?? {}) as Record<string, unknown>;
+    const hasRender =
+      Array.isArray(parent.render_assertions) ||
+      Array.isArray(parent.render_assertions_template);
+    if (!hasRender) continue;
+
+    let expanded: ExpandedManifest[];
+    try {
+      expanded = expandManifest(raw);
+    } catch (e) {
+      errors.push({
+        path: full,
+        parentId: String(parent.id ?? name),
+        error: `expandManifest failed: ${(e as Error).message}`,
+      });
       continue;
     }
-    entries.push({ path: full, manifest: parsed });
+
+    for (const cased of expanded) {
+      const manifest = cased as Manifest;
+      const renderAssertions = manifest.render_assertions as
+        | RenderAssertion[]
+        | undefined;
+      if (!renderAssertions || renderAssertions.length === 0) continue;
+      entries.push({ path: full, manifest });
+    }
   }
-  return entries;
+  return { entries, errors };
 }
 
 function featureIdToFileName(featureId: string): string {
@@ -156,7 +223,9 @@ function referencePngPath(manifest: Manifest, assertion: RenderAssertion): strin
 // ---------------------------------------------------------------------------
 
 const corpusPresent = existsSync(FEATURES_DIR);
-const discovered = corpusPresent ? discoverManifests() : [];
+const discovered: DiscoveryResult = corpusPresent
+  ? discoverManifests()
+  : { entries: [], errors: [] };
 
 test.describe('pptxjs render-assertion conformance', () => {
   if (!corpusPresent) {
@@ -168,12 +237,21 @@ test.describe('pptxjs render-assertion conformance', () => {
     return;
   }
 
-  if (discovered.length === 0) {
+  // Surface manifest-authoring mistakes as visible test failures rather
+  // than silent drops. One test per broken file — its body just
+  // fails with the collected error message.
+  for (const err of discovered.errors) {
+    test(`manifest ${err.parentId} [discovery error]`, () => {
+      expect(err.error, `in ${err.path}`).toBe('');
+    });
+  }
+
+  if (discovered.entries.length === 0) {
     test.skip('no pptx feature manifests with render_assertions yet', () => {});
     return;
   }
 
-  for (const { manifest } of discovered) {
+  for (const { manifest } of discovered.entries) {
     test(`feature ${manifest.id}`, async ({ page }) => {
       const fixtureStem = fixtureNameFromManifest(manifest);
       const fixtureAbsPath = join(FIXTURES_DIR, `${fixtureStem}.pptx`);
