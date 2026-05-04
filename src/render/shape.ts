@@ -1,10 +1,10 @@
 import type { Shape } from '../presentation-parser';
 import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
-import { solidColorFromFill } from './fill-utils';
+import { solidColorFromFill, fillToCssBackground } from './fill-utils';
 import { presetToSvgPath } from '../preset-geom';
 
-export function renderShape(shape: Shape, cls: string): HTMLElement {
+export function renderShape(shape: Shape, cls: string, embedUrls: Map<string, string>): HTMLElement {
 	const el = document.createElement("div");
 	el.className = `${cls}-shape`;
 	Object.assign(el.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
@@ -22,10 +22,10 @@ export function renderShape(shape: Shape, cls: string): HTMLElement {
 			el.appendChild(svg);
 		} else {
 			// Unknown preset — fall back to the plain-box look.
-			applyBoxFill(el, shape);
+			applyBoxFill(el, shape, embedUrls);
 		}
 	} else {
-		applyBoxFill(el, shape);
+		applyBoxFill(el, shape, embedUrls);
 	}
 	const autoNumState: AutoNumState = new Map();
 	for (const p of shape.paragraphs) {
@@ -36,9 +36,11 @@ export function renderShape(shape: Shape, cls: string): HTMLElement {
 
 // Emit the fill / border as CSS on the shape's <div> (legacy path for shapes
 // with no custGeom or preset, or with an unrecognised preset).
-function applyBoxFill(el: HTMLElement, shape: Shape): void {
-	if (shape.fill?.kind === 'solid') el.style.background = shape.fill.colorHex;
-	// Wave 2 — render non-solid line fills (gradient/blip/pattern) properly.
+function applyBoxFill(el: HTMLElement, shape: Shape, embedUrls: Map<string, string>): void {
+	const bg = fillToCssBackground(shape.fill, embedUrls);
+	if (bg) el.style.background = bg;
+	// TODO: support gradient / blip / pattern line fills; currently only
+	// the solid color path is honoured for strokes.
 	const lineColor = solidColorFromFill(shape.line?.fill ?? null);
 	if (shape.line && lineColor) {
 		const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;

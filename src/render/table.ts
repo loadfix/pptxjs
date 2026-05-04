@@ -1,6 +1,7 @@
 import type { TableShape, TableCell } from '../presentation-parser';
 import { emuToPx, positionStyle, transformStyle } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
+import { fillToCssBackground } from './fill-utils';
 
 export function renderTable(t: TableShape, cls: string): HTMLElement {
 	const wrap = document.createElement("div");
@@ -47,7 +48,10 @@ export function renderCell(cell: TableCell): HTMLTableCellElement {
 	td.style.border = "1px solid #ccc";
 	td.style.padding = "4px";
 	td.style.verticalAlign = "top";
-	if (cell.fill?.kind === 'solid') td.style.background = cell.fill.colorHex;
+	// Cell fills are currently typed as SolidFill only; route through
+	// fillToCssBackground for consistency with shape rendering.
+	const bg = fillToCssBackground(cell.fill, new Map());
+	if (bg) td.style.background = bg;
 	if (cell.gridSpan > 1) td.colSpan = cell.gridSpan;
 	if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
 	const autoNumState: AutoNumState = new Map();

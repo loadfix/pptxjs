@@ -6,6 +6,7 @@ import {
 	parseStaticShapes,
 	Slide,
 	SlideSize,
+	ShapeLike,
 	buildPlaceholderMap,
 	emptyPlaceholderMap,
 	emptyMasterTextStyles,
@@ -46,6 +47,12 @@ interface LayoutBundle {
 export class Presentation {
 	slides: Slide[] = [];
 	slideSize: SlideSize = { cx: 9144000, cy: 6858000 };
+	// rId → resolved URL, merged across all parts (slide/layout/master).
+	// Because rIds are part-relative and can collide, entries are rewritten
+	// to globally unique synthetic keys and the corresponding BlipFill.rId
+	// on the parsed shapes is updated to match. The renderer reads this
+	// map via `HtmlRenderer.render`.
+	embedUrls: Map<string, string> = new Map();
 
 	static async load(data: Blob | any, _parser: unknown, options: Options): Promise<Presentation> {
 		const pkg = await OpenXmlPackage.load(data, { trimXmlDeclaration: options.trimXmlDeclaration });
@@ -211,15 +218,20 @@ export class Presentation {
 			const staticShapes: ReturnType<typeof parseStaticShapes> = [];
 			if (master.doc && masterPath) {
 				const masterEmbeds = await embedsFor(masterPath);
-				staticShapes.push(...parseStaticShapes(master.doc, { ...baseCtx, embedUrls: masterEmbeds }));
+				const shapes = parseStaticShapes(master.doc, { ...baseCtx, embedUrls: masterEmbeds });
+				rewriteBlipRIds(shapes, masterEmbeds, masterPath, pres.embedUrls);
+				staticShapes.push(...shapes);
 			}
 			if (layout.doc && layoutPath) {
 				const layoutEmbeds = await embedsFor(layoutPath);
-				staticShapes.push(...parseStaticShapes(layout.doc, { ...baseCtx, embedUrls: layoutEmbeds }));
+				const shapes = parseStaticShapes(layout.doc, { ...baseCtx, embedUrls: layoutEmbeds });
+				rewriteBlipRIds(shapes, layoutEmbeds, layoutPath, pres.embedUrls);
+				staticShapes.push(...shapes);
 			}
 
 			const slideEmbeds = await embedsFor(path);
 			const slide = parseSlide(doc, i, { ...baseCtx, embedUrls: slideEmbeds });
+			rewriteBlipRIds(slide.shapes, slideEmbeds, path, pres.embedUrls);
 			// Prepend static chrome so slide content renders on top.
 			slide.shapes = [...staticShapes, ...slide.shapes];
 
@@ -232,5 +244,29 @@ export class Presentation {
 		}
 
 		return pres;
+	}
+}
+
+// Walk the parsed shapes from a single part (slide/layout/master) and, for
+// every BlipFill carrying a rId resolvable via `partEmbeds`, rewrite the
+// rId to a globally unique synthetic key and register the corresponding
+// URL in `outMap`. This lets the renderer consult one merged map without
+// caring which part a given rId came from.
+function rewriteBlipRIds(
+	shapes: ShapeLike[],
+	partEmbeds: Map<string, string>,
+	partPath: string,
+	outMap: Map<string, string>,
+): void {
+	for (const s of shapes) {
+		if (s.kind !== 'shape') continue;
+		if (s.fill && s.fill.kind === 'blip') {
+			const url = partEmbeds.get(s.fill.rId);
+			if (url) {
+				const key = `${partPath}#${s.fill.rId}`;
+				outMap.set(key, url);
+				s.fill.rId = key;
+			}
+		}
 	}
 }

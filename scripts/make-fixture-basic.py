@@ -4,7 +4,9 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
+from lxml import etree
 
 OUT = Path(__file__).resolve().parent.parent / "tests" / "render-test" / "basic" / "presentation.pptx"
 
@@ -116,6 +118,63 @@ data = [("Alice", "Engineer", "92"), ("Bob", "Designer", "88")]
 for r, row in enumerate(data, start=1):
     for c, val in enumerate(row):
         tbl.cell(r, c).text = val
+
+# Slide with a gradient-filled shape to exercise GradientFill render path.
+gradient_slide = prs.slides.add_slide(prs.slide_layouts[5])
+gradient_slide.shapes.title.text = "Gradient fill"
+grad_shape = gradient_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(1), Inches(2), Inches(6), Inches(2)
+)
+# python-pptx doesn't expose gradient fills directly; inject the OOXML.
+sp_pr = grad_shape.fill._xPr  # <p:spPr>
+# Drop any existing fill (python-pptx sets a default fill).
+for tag in ("a:solidFill", "a:noFill", "a:gradFill", "a:blipFill", "a:pattFill"):
+    for el in sp_pr.findall(qn(tag)):
+        sp_pr.remove(el)
+grad_xml = (
+    "<a:gradFill xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " flip='none' rotWithShape='1'>"
+    "  <a:gsLst>"
+    "    <a:gs pos='0'><a:srgbClr val='4F81BD'/></a:gs>"
+    "    <a:gs pos='100000'><a:srgbClr val='C0504D'/></a:gs>"
+    "  </a:gsLst>"
+    "  <a:lin ang='2700000' scaled='1'/>"
+    "</a:gradFill>"
+)
+sp_pr.append(etree.fromstring(grad_xml))
+grad_shape.text_frame.text = "Linear gradient"
+grad_shape.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+
+# Slide with a picture-filled shape (BlipFill) to exercise the blip render path.
+pic_fill_slide = prs.slides.add_slide(prs.slide_layouts[5])
+pic_fill_slide.shapes.title.text = "Picture fill"
+pic_shape = pic_fill_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(2), Inches(2), Inches(5), Inches(3)
+)
+pic_sp_pr = pic_shape.fill._xPr
+for tag in ("a:solidFill", "a:noFill", "a:gradFill", "a:blipFill", "a:pattFill"):
+    for el in pic_sp_pr.findall(qn(tag)):
+        pic_sp_pr.remove(el)
+# Add the image as a relationship, then reference it via blipFill.
+image_path = Path("/home/ben/code/python-pptx/tests/test_files/python-powered.png")
+rId = pic_fill_slide.part.relate_to(
+    str(image_path),
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+    is_external=False,
+) if False else None
+# Simpler: add_picture first, grab its rId, then remove the picture shape.
+tmp_pic = pic_fill_slide.shapes.add_picture(str(image_path), 0, 0, Inches(1), Inches(1))
+blip = tmp_pic._element.find(".//" + qn("a:blip"))
+blip_fill_rid = blip.get(qn("r:embed"))
+tmp_pic._element.getparent().remove(tmp_pic._element)
+blip_xml = (
+    "<a:blipFill xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships'>"
+    f"  <a:blip r:embed='{blip_fill_rid}'/>"
+    "  <a:stretch><a:fillRect/></a:stretch>"
+    "</a:blipFill>"
+)
+pic_sp_pr.append(etree.fromstring(blip_xml))
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 prs.save(OUT)
