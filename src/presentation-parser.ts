@@ -455,6 +455,16 @@ export function parseMasterTextStyles(masterDoc: Document): MasterTextStyles {
 	};
 }
 
+// Parse a notes master's <p:notesStyle> — sibling of <p:cSld>, same schema as
+// an <a:lstStyle> (direct children are <a:lvl1pPr>..<a:lvl9pPr>). Returns an
+// empty LevelStyles when the element is absent. Handout masters don't carry
+// a comparable element; callers should just ignore it for them.
+export function parseNotesStyle(notesMasterDoc: Document): LevelStyles {
+	const root = notesMasterDoc.documentElement;
+	const notesStyle = firstChildNS(root, A_NS.p, "notesStyle");
+	return parseLevelStyles(notesStyle);
+}
+
 export class PresentationParser {
 	constructor(public options: Options) {}
 }

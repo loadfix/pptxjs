@@ -13,12 +13,14 @@ import {
 	emptyPlaceholderMap,
 	emptyMasterTextStyles,
 	parseMasterTextStyles,
+	parseNotesStyle,
 	extractHfPlaceholderText,
 	emptyHeaderFooterFlags,
 	PlaceholderMap,
 	MasterTextStyles,
 	SlideParseContext,
 } from './presentation-parser';
+import { LevelStyles } from './text-style';
 import {
 	CHART_REL_TYPE,
 	findChartFallbackImage,
@@ -46,6 +48,8 @@ const THEME_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/re
 const IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 const SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
+const NOTES_MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster";
+const HANDOUT_MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/handoutMaster";
 
 // PresentationML 2010 extensions namespace. Sections (<p14:sectionLst>) are
 // PowerPoint 2010+ metadata carried under the standard <p:extLst> extension
@@ -73,13 +77,23 @@ export function isSafeHyperlinkHref(href: string): boolean {
 	return SAFE_HYPERLINK_SCHEMES.has(m[1].toLowerCase() + ":");
 }
 
-interface MasterBundle {
+export interface MasterBundle {
 	placeholders: PlaceholderMap;
 	textStyles: MasterTextStyles;
 	clrMap: ClrMap;
 	theme: ThemeColors;
 	path: string | null;
 	doc: Document | null;
+}
+
+// Notes master bundle. Same shape as MasterBundle but carries its own
+// `notesStyle` (the notesMaster's <p:notesStyle>, which plays the role
+// bodyStyle does for slide masters) alongside the regular textStyles.
+// Handout masters use the plain MasterBundle — they have no analogous text
+// styles element, but we still want placeholders/theme/clrMap available for
+// a future print-handouts pass.
+export interface NotesMasterBundle extends MasterBundle {
+	notesStyle: LevelStyles;
 }
 
 interface LayoutBundle {
@@ -107,6 +121,15 @@ export class Presentation {
 	// use this to render a section-aware navigator / ToC. Purely metadata;
 	// renderer doesn't consume it.
 	sections: Section[] = [];
+	// Notes master — parsed once from `ppt/notesMasters/notesMaster1.xml` (if
+	// declared in the presentation's rels). Carries placeholders + clrMap +
+	// theme + the notesStyle text defaults that speaker-notes rendering
+	// inherits. Null when the deck has no notesMaster.
+	notesMaster: NotesMasterBundle | null = null;
+	// Handout master — parsed from `ppt/handoutMasters/handoutMaster1.xml`
+	// when present. Currently only loaded (not yet rendered) so future
+	// print-handouts support has the chrome/theme context ready.
+	handoutMaster: MasterBundle | null = null;
 
 	static async load(data: Blob | any, _parser: unknown, options: Options): Promise<Presentation> {
 		const pkg = await OpenXmlPackage.load(data, { trimXmlDeclaration: options.trimXmlDeclaration });
@@ -145,6 +168,13 @@ export class Presentation {
 		}
 
 		const rels = await pkg.loadRelationships(presPath);
+		// Load the notes/handout masters declared directly on the presentation.
+		// These parts carry the theme + placeholder + text-style chrome that
+		// speaker-notes / print-handouts rendering should inherit. Each is a
+		// single optional part — loader helpers return null when absent.
+		pres.notesMaster = await loadNotesMaster(pkg, presPath, rels);
+		pres.handoutMaster = await loadHandoutMaster(pkg, presPath, rels);
+
 		// Only direct children of <p:sldIdLst> — there may be other <p:sldId>
 		// elements nested under <p14:sectionLst> (one per section entry) that
 		// use the same local name in the p14 namespace; we don't want those,
@@ -627,6 +657,68 @@ function findChild(parent: Element, ns: string, localName: string): Element | nu
 		if (c.namespaceURI === ns && c.localName === localName) return c;
 	}
 	return null;
+}
+
+// Shared loader for a single notes / handout / slide master part. Resolves
+// the part's own theme rel, builds the placeholder map + textStyles, and
+// parses the clrMap declared inside the part. Returns null when the part
+// itself is missing or unreadable so callers can treat absence as "no such
+// master" (distinct from "present but empty").
+async function loadMasterBundle(
+	pkg: OpenXmlPackage,
+	containerPath: string,
+	rels: Map<string, import('./open-xml-package').Relationship>,
+	relType: string,
+): Promise<{ bundle: MasterBundle; doc: Document } | null> {
+	let masterPath: string | null = null;
+	for (const r of rels.values()) {
+		if (r.type === relType) {
+			masterPath = resolveRelTarget(containerPath, r.target);
+			break;
+		}
+	}
+	if (!masterPath) return null;
+	const masterDoc = await pkg.loadXml(masterPath);
+	if (!masterDoc) return null;
+
+	let theme = emptyThemeColors();
+	const masterRels = await pkg.loadRelationships(masterPath);
+	for (const r of masterRels.values()) {
+		if (r.type !== THEME_REL_TYPE) continue;
+		const themePath = resolveRelTarget(masterPath, r.target);
+		const themeDoc = await pkg.loadXml(themePath);
+		if (themeDoc) theme = parseTheme(themeDoc);
+		break;
+	}
+
+	const bundle: MasterBundle = {
+		placeholders: buildPlaceholderMap(masterDoc),
+		textStyles: parseMasterTextStyles(masterDoc),
+		clrMap: parseClrMap(masterDoc),
+		theme,
+		path: masterPath,
+		doc: masterDoc,
+	};
+	return { bundle, doc: masterDoc };
+}
+
+async function loadNotesMaster(
+	pkg: OpenXmlPackage,
+	presPath: string,
+	presRels: Map<string, import('./open-xml-package').Relationship>,
+): Promise<NotesMasterBundle | null> {
+	const loaded = await loadMasterBundle(pkg, presPath, presRels, NOTES_MASTER_REL_TYPE);
+	if (!loaded) return null;
+	return { ...loaded.bundle, notesStyle: parseNotesStyle(loaded.doc) };
+}
+
+async function loadHandoutMaster(
+	pkg: OpenXmlPackage,
+	presPath: string,
+	presRels: Map<string, import('./open-xml-package').Relationship>,
+): Promise<MasterBundle | null> {
+	const loaded = await loadMasterBundle(pkg, presPath, presRels, HANDOUT_MASTER_REL_TYPE);
+	return loaded ? loaded.bundle : null;
 }
 
 // Translate a `ppaction://hlinkshowjump?jump=...` URI to a `#slide-N` fragment

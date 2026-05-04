@@ -56,7 +56,7 @@ export class HtmlRenderer {
 			}
 			out.push(section);
 			if (options.renderNotes) {
-				const notesEl = renderNotesBlock(slide, options.className);
+				const notesEl = renderNotesBlock(slide, options.className, presentation.notesMaster);
 				if (notesEl) out.push(notesEl);
 			}
 		}
