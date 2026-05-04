@@ -1,6 +1,6 @@
 import { Presentation } from './presentation';
 import { PresentationParser } from './presentation-parser';
-import { HtmlRenderer } from './html-renderer';
+import { HtmlRenderer } from './render';
 
 export interface Options {
 	className: string;
