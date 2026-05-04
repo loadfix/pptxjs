@@ -15,6 +15,13 @@ export function renderTable(t: TableShape, cls: string): HTMLElement {
 		tableLayout: "fixed",
 	});
 
+	// Accessibility: explicit role="table" (redundant for the native element
+	// but harmless, and guards against CSS display overrides). aria-label
+	// prefers the title; falls back to the shape's alt/name text.
+	table.setAttribute("role", "table");
+	const tableLabel = t.title || t.alt || t.name;
+	if (tableLabel) table.setAttribute("aria-label", tableLabel);
+
 	if (t.colWidthsEmu.length > 0) {
 		const colgroup = document.createElement("colgroup");
 		for (const w of t.colWidthsEmu) {

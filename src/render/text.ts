@@ -104,4 +104,7 @@ function applyRunStyle(el: HTMLElement, s: TextRun['style']): void {
 	if (s.sizeHundredths != null) el.style.fontSize = `${s.sizeHundredths / 100}pt`;
 	if (s.colorHex) el.style.color = s.colorHex;
 	if (s.fontFamily) el.style.fontFamily = s.fontFamily;
+	// Wave 2 P11 — expose <a:rPr lang=> as `lang` so screen readers can pick
+	// the right pronunciation for the run's text.
+	if (s.lang) el.setAttribute("lang", s.lang);
 }
