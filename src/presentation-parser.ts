@@ -27,6 +27,12 @@ export interface Slide {
 	index: number;
 	shapes: ShapeLike[];
 	background: import('./background').BackgroundFill | null;
+	// Speaker notes from the associated notesSlide part, or null when the
+	// slide has none. Populated by Presentation.load after parseSlide runs.
+	notes: import('./notes').NotesSlide | null;
+	// Review comments on this slide. Always an array — empty when the slide
+	// has no comments part.
+	comments: import('./comments').Comment[];
 }
 
 export type ShapeLike = Shape | PicShape | TableShape;
@@ -295,7 +301,7 @@ export function parseSlide(doc: Document, index: number, ctx: SlideParseContext)
 	const shapes: ShapeLike[] = [];
 	const spTree = firstChildNS(firstChildNS(doc.documentElement, A_NS.p, "cSld"), A_NS.p, "spTree");
 	if (spTree) walkSpTree(spTree, shapes, ctx);
-	return { index, shapes, background: null };
+	return { index, shapes, background: null, notes: null, comments: [] };
 }
 
 // Collect non-placeholder shapes from a layout or master — static decoration

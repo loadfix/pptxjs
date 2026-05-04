@@ -13,6 +13,11 @@ prs = Presentation()
 title_slide = prs.slides.add_slide(prs.slide_layouts[0])
 title_slide.shapes.title.text = "pptxjs fixture"
 title_slide.placeholders[1].text = "A minimal presentation"
+# Speaker notes on the title slide exercise the notesSlide rel + body
+# placeholder parsing in src/notes.ts.
+title_slide.notes_slide.notes_text_frame.text = (
+    "Speaker notes here.\nSecond line of notes for testing."
+)
 
 content_slide = prs.slides.add_slide(prs.slide_layouts[1])
 content_slide.shapes.title.text = "Bullet points"
@@ -77,4 +82,50 @@ for r, row in enumerate(data, start=1):
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 prs.save(OUT)
+
+# python-pptx has no comment API, so patch the saved .pptx zip directly to
+# add one comment on slide 1. This exercises commentAuthors.xml parsing
+# plus the per-slide comments part + rel wiring in src/comments.ts.
+import shutil
+import zipfile
+
+AUTHORS_XML = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:cmAuthorLst xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cmAuthor id="0" name="Fixture Author" initials="FA" lastIdx="1" clrIdx="0"/>
+</p:cmAuthorLst>
+"""
+
+COMMENTS_XML = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:cmLst xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cm authorId="0" dt="2024-01-15T10:00:00Z" idx="1">
+    <p:pos x="1828800" y="1143000"/>
+    <p:text>Sample review comment for testing.</p:text>
+  </p:cm>
+</p:cmLst>
+"""
+
+# Relationships to add: presentation → commentAuthors; slide1 → comments1.
+SLIDE1_RELS_ADD = '<Relationship Id="rId99" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments/comment1.xml"/>'
+PRES_RELS_ADD = '<Relationship Id="rId98" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/commentAuthors" Target="commentAuthors.xml"/>'
+
+CT_OVERRIDES = [
+    '<Override PartName="/ppt/commentAuthors.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.commentAuthors+xml"/>',
+    '<Override PartName="/ppt/comments/comment1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.comments+xml"/>',
+]
+
+TMP = OUT.with_suffix(".tmp.pptx")
+with zipfile.ZipFile(OUT, "r") as src, zipfile.ZipFile(TMP, "w", zipfile.ZIP_DEFLATED) as dst:
+    for item in src.infolist():
+        data = src.read(item.filename)
+        if item.filename == "ppt/slides/_rels/slide1.xml.rels":
+            data = data.replace(b"</Relationships>", SLIDE1_RELS_ADD.encode() + b"</Relationships>")
+        elif item.filename == "ppt/_rels/presentation.xml.rels":
+            data = data.replace(b"</Relationships>", PRES_RELS_ADD.encode() + b"</Relationships>")
+        elif item.filename == "[Content_Types].xml":
+            data = data.replace(b"</Types>", "".join(CT_OVERRIDES).encode() + b"</Types>")
+        dst.writestr(item, data)
+    dst.writestr("ppt/commentAuthors.xml", AUTHORS_XML)
+    dst.writestr("ppt/comments/comment1.xml", COMMENTS_XML)
+
+shutil.move(TMP, OUT)
 print(f"wrote {OUT}")
