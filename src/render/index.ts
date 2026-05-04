@@ -17,9 +17,11 @@ export class HtmlRenderer {
 			const section = document.createElement("section");
 			section.className = `${options.className}-slide`;
 			section.dataset.slideIndex = String(slide.index);
+			// Intra-deck hyperlinks (`#slide-N`) use this id as their target.
+			section.id = `slide-${slide.index}`;
 			applyBackground(section, slide);
 			for (const shape of slide.shapes) {
-				section.appendChild(renderShapeLike(shape, options.className));
+				section.appendChild(renderShapeLike(shape, options.className, slide.hyperlinkUrls));
 			}
 			out.push(section);
 		}

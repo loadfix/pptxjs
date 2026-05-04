@@ -2,7 +2,7 @@ import type { TableShape, TableCell } from '../presentation-parser';
 import { emuToPx, positionStyle } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
 
-export function renderTable(t: TableShape, cls: string): HTMLElement {
+export function renderTable(t: TableShape, cls: string, hyperlinkUrls: Map<string, string>): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-table`;
 	Object.assign(wrap.style, positionStyle(t.x, t.y, t.cx, t.cy));
@@ -32,7 +32,7 @@ export function renderTable(t: TableShape, cls: string): HTMLElement {
 			// Continuation cells of a span are suppressed; the primary cell
 			// renders with the appropriate colSpan/rowSpan.
 			if (cell.hMerge || cell.vMerge) continue;
-			tr.appendChild(renderCell(cell));
+			tr.appendChild(renderCell(cell, hyperlinkUrls));
 		}
 		table.appendChild(tr);
 	}
@@ -41,7 +41,7 @@ export function renderTable(t: TableShape, cls: string): HTMLElement {
 	return wrap;
 }
 
-export function renderCell(cell: TableCell): HTMLTableCellElement {
+export function renderCell(cell: TableCell, hyperlinkUrls: Map<string, string>): HTMLTableCellElement {
 	const td = document.createElement("td");
 	td.style.border = "1px solid #ccc";
 	td.style.padding = "4px";
@@ -51,7 +51,7 @@ export function renderCell(cell: TableCell): HTMLTableCellElement {
 	if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
 	const autoNumState: AutoNumState = new Map();
 	for (const p of cell.paragraphs) {
-		td.appendChild(renderParagraph(p, autoNumState));
+		td.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls));
 	}
 	return td;
 }
