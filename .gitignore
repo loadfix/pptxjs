@@ -1,0 +1,19 @@
+node_modules/
+dist/
+
+# Build artefacts / logs
+*.log
+bin/
+obj/
+
+# Editor / tool scratch
+.vs/
+.idea/
+.vscode/
+
+# Screenshots from Playwright runs
+.screenshots/
+.playwright-mcp/
+
+# Private test fixtures not intended for publication.
+tests/render-test/sample/
