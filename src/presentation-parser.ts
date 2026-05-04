@@ -1,6 +1,8 @@
 import type { Options } from './pptx-preview';
 import { A_NS } from './namespaces';
 import { firstChildNS, childrenNS } from './xml-utils';
+import type { ChartFallbackShape, SmartArtFallbackShape } from './graphic-frame';
+import { URI_TABLE, URI_CHART, URI_DIAGRAM } from './graphic-frame';
 import {
 	RunStyle,
 	ParaStyle,
@@ -29,7 +31,7 @@ export interface Slide {
 	background: import('./background').BackgroundFill | null;
 }
 
-export type ShapeLike = Shape | PicShape | TableShape;
+export type ShapeLike = Shape | PicShape | TableShape | ChartFallbackShape | SmartArtFallbackShape;
 
 // Non-visual descriptive metadata extracted from <p:cNvPr>. Shared across
 // every shape kind (sp, pic, cxnSp, graphicFrame, grpSp).
@@ -433,7 +435,7 @@ function walkSpTree(container: Element, out: ShapeLike[], ctx: SlideParseContext
 	}
 }
 
-function parseGraphicFrame(gf: Element, ctx: SlideParseContext): TableShape | null {
+function parseGraphicFrame(gf: Element, ctx: SlideParseContext): ShapeLike | null {
 	// <p:xfrm> lives directly under <p:graphicFrame> (not <p:spPr>).
 	const xfrm = firstChildNS(gf, A_NS.p, "xfrm");
 	const off = xfrm && firstChildNS(xfrm, A_NS.a, "off");
@@ -446,39 +448,109 @@ function parseGraphicFrame(gf: Element, ctx: SlideParseContext): TableShape | nu
 	const flipH = xfrm?.getAttribute("flipH") === "1";
 	const flipV = xfrm?.getAttribute("flipV") === "1";
 
-	const graphic = firstChildNS(gf, A_NS.a, "graphic");
-	const graphicData = graphic && firstChildNS(graphic, A_NS.a, "graphicData");
-	const tbl = graphicData && firstChildNS(graphicData, A_NS.a, "tbl");
-	if (!tbl) return null;
-
-	const colWidthsEmu: number[] = [];
-	const tblGrid = firstChildNS(tbl, A_NS.a, "tblGrid");
-	if (tblGrid) {
-		for (const col of childrenNS(tblGrid, A_NS.a, "gridCol")) {
-			colWidthsEmu.push(Number(col.getAttribute("w")) || 0);
-		}
-	}
-
-	const rows: TableRow[] = [];
-	for (const trEl of childrenNS(tbl, A_NS.a, "tr")) {
-		rows.push(parseTableRow(trEl, ctx));
-	}
-
 	const nvGraphicFramePr = firstChildNS(gf, A_NS.p, "nvGraphicFramePr");
 	const nv = parseNonVisualProps(nvGraphicFramePr);
 
-	return {
-		kind: 'table',
-		x, y, cx, cy,
-		colWidthsEmu,
-		rows,
-		name: nv.name,
-		title: nv.title,
-		alt: nv.descr,
-		rotation60k,
-		flipH,
-		flipV,
-	};
+	const graphic = firstChildNS(gf, A_NS.a, "graphic");
+	const graphicData = graphic && firstChildNS(graphic, A_NS.a, "graphicData");
+	if (!graphicData) return null;
+	const uri = graphicData.getAttribute("uri") ?? "";
+
+	if (uri === URI_TABLE) {
+		const tbl = firstChildNS(graphicData, A_NS.a, "tbl");
+		if (!tbl) return null;
+
+		const colWidthsEmu: number[] = [];
+		const tblGrid = firstChildNS(tbl, A_NS.a, "tblGrid");
+		if (tblGrid) {
+			for (const col of childrenNS(tblGrid, A_NS.a, "gridCol")) {
+				colWidthsEmu.push(Number(col.getAttribute("w")) || 0);
+			}
+		}
+		const rows: TableRow[] = [];
+		for (const trEl of childrenNS(tbl, A_NS.a, "tr")) {
+			rows.push(parseTableRow(trEl, ctx));
+		}
+
+		return {
+			kind: 'table',
+			x, y, cx, cy,
+			colWidthsEmu,
+			rows,
+			name: nv.name,
+			title: nv.title,
+			alt: nv.descr,
+			rotation60k,
+			flipH,
+			flipV,
+		};
+	}
+
+	if (uri === URI_CHART) {
+		// <c:chart r:id="..."/> — namespace is the chart schema, not a/p.
+		// We don't import that ns just for one attribute, so find by local
+		// name. The rId is used downstream to resolve a cached image.
+		let chartRId: string | null = null;
+		for (const c of Array.from(graphicData.children)) {
+			if (c.localName === "chart") {
+				chartRId = c.getAttributeNS(A_NS.r, "id");
+				break;
+			}
+		}
+		const out: ChartFallbackShape = {
+			kind: 'chart-fallback',
+			x, y, cx, cy,
+			chartRId,
+			src: null,
+			name: nv.name,
+			title: nv.title,
+			alt: nv.descr,
+			rotation60k,
+			flipH,
+			flipV,
+		};
+		return out;
+	}
+
+	if (uri === URI_DIAGRAM) {
+		// <dgm:relIds r:dm="..." r:lo="..." r:qs="..." r:cs="..."/> — we
+		// only need `r:dm` (diagram data); the drawing cache is discovered
+		// off the slide's rels later.
+		let dataRId: string | null = null;
+		for (const c of Array.from(graphicData.children)) {
+			if (c.localName === "relIds") {
+				dataRId = c.getAttributeNS(A_NS.r, "dm");
+				break;
+			}
+		}
+		const out: SmartArtFallbackShape = {
+			kind: 'smartart-fallback',
+			x, y, cx, cy,
+			dataRId,
+			name: nv.name,
+			title: nv.title,
+			alt: nv.descr,
+			rotation60k,
+			flipH,
+			flipV,
+		};
+		return out;
+	}
+
+	// Unknown graphicData — silent skip, matching pre-existing behaviour.
+	// eslint-disable-next-line no-console
+	console.debug(`[pptxjs] unknown graphicFrame uri: ${uri}`);
+	return null;
+}
+
+// Expose the static-shapes walker over an arbitrary <spTree> element (not
+// rooted at a slide's <p:cSld>). Used to expand SmartArt drawing caches,
+// whose <dsp:drawing><dsp:spTree>…</dsp:spTree> the caller has already
+// rewritten into p-main so the structural matches line up.
+export function parseShapesFromSpTree(spTree: Element, ctx: SlideParseContext): ShapeLike[] {
+	const out: ShapeLike[] = [];
+	walkSpTreeStatic(spTree, out, ctx);
+	return out;
 }
 
 function parseTableRow(tr: Element, ctx: SlideParseContext): TableRow {

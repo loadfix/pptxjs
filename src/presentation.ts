@@ -4,15 +4,24 @@ import { imageMimeFromPath } from './mime';
 import {
 	parseSlide,
 	parseStaticShapes,
+	parseShapesFromSpTree,
 	Slide,
 	SlideSize,
+	ShapeLike,
 	buildPlaceholderMap,
 	emptyPlaceholderMap,
 	emptyMasterTextStyles,
 	parseMasterTextStyles,
 	PlaceholderMap,
 	MasterTextStyles,
+	SlideParseContext,
 } from './presentation-parser';
+import {
+	CHART_REL_TYPE,
+	findChartFallbackImage,
+	findSmartArtDrawingDoc,
+	parseSmartArtShapesFromDoc,
+} from './graphic-frame';
 import {
 	ThemeColors,
 	ClrMap,
@@ -219,7 +228,20 @@ export class Presentation {
 			}
 
 			const slideEmbeds = await embedsFor(path);
-			const slide = parseSlide(doc, i, { ...baseCtx, embedUrls: slideEmbeds });
+			const slideCtx: SlideParseContext = { ...baseCtx, embedUrls: slideEmbeds };
+			const slide = parseSlide(doc, i, slideCtx);
+
+			// Resolve chart / SmartArt fallback shapes now that we have
+			// access to the package and the slide's rels. Charts are
+			// replaced in-place with their cached image URL (or left with
+			// src:null for the [Chart] placeholder); SmartArt frames are
+			// replaced with the expanded DrawingML shape list when a
+			// drawing cache exists.
+			const slideRels = await pkg.loadRelationships(path);
+			slide.shapes = await resolveGraphicFrameFallbacks(
+				pkg, path, slideRels, slide.shapes, slideCtx, mediaUrlCache,
+			);
+
 			// Prepend static chrome so slide content renders on top.
 			slide.shapes = [...staticShapes, ...slide.shapes];
 
@@ -233,4 +255,57 @@ export class Presentation {
 
 		return pres;
 	}
+}
+
+// Walk the slide's shapes after the element-tree parse, filling in chart
+// cached images and expanding SmartArt frames into their pre-rendered
+// drawings. Any frame whose cache is absent stays in place with a null
+// `src` (chart) or is kept as-is (SmartArt) so the renderer can emit a
+// labeled placeholder.
+async function resolveGraphicFrameFallbacks(
+	pkg: OpenXmlPackage,
+	slidePath: string,
+	slideRels: Map<string, import('./open-xml-package').Relationship>,
+	shapes: ShapeLike[],
+	ctx: SlideParseContext,
+	mediaUrlCache: Map<string, string>,
+): Promise<ShapeLike[]> {
+	const out: ShapeLike[] = [];
+	for (const s of shapes) {
+		if (s.kind === 'chart-fallback') {
+			if (s.chartRId) {
+				const rel = slideRels.get(s.chartRId);
+				if (rel && rel.type === CHART_REL_TYPE) {
+					const chartPath = resolveRelTarget(slidePath, rel.target);
+					s.src = await findChartFallbackImage(pkg, chartPath, mediaUrlCache);
+				}
+			}
+			out.push(s);
+			continue;
+		}
+		if (s.kind === 'smartart-fallback') {
+			if (s.dataRId) {
+				const drawingDoc = await findSmartArtDrawingDoc(pkg, slidePath, slideRels, s.dataRId);
+				if (drawingDoc) {
+					const expanded = parseSmartArtShapesFromDoc(drawingDoc, ctx, parseShapesFromSpTree);
+					if (expanded.length > 0) {
+						// SmartArt drawings use diagram-local coords. Offset
+						// each expanded shape by the frame's position so it
+						// lands where PowerPoint painted it on the slide.
+						for (const ex of expanded) {
+							ex.x += s.x;
+							ex.y += s.y;
+						}
+						out.push(...expanded);
+						continue;
+					}
+				}
+			}
+			// Fall through: keep the placeholder shape for the renderer.
+			out.push(s);
+			continue;
+		}
+		out.push(s);
+	}
+	return out;
 }
