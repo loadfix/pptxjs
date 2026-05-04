@@ -22,6 +22,7 @@ import {
 	parseClrMap,
 } from './theme';
 import { parseSlideBackground } from './background';
+import { loadTableStyles, TableStyle } from './table-style';
 import { A_NS } from './namespaces';
 
 const LAYOUT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
@@ -46,6 +47,9 @@ interface LayoutBundle {
 export class Presentation {
 	slides: Slide[] = [];
 	slideSize: SlideSize = { cx: 9144000, cy: 6858000 };
+	// Populated once at load time from ppt/tableStyles.xml. Null when the
+	// package has no such part — renderers should fall back to defaults.
+	tableStyles: Map<string, TableStyle> | null = null;
 
 	static async load(data: Blob | any, _parser: unknown, options: Options): Promise<Presentation> {
 		const pkg = await OpenXmlPackage.load(data, { trimXmlDeclaration: options.trimXmlDeclaration });
@@ -54,6 +58,11 @@ export class Presentation {
 		const presPath = "ppt/presentation.xml";
 		const presDoc = await pkg.loadXml(presPath);
 		if (!presDoc) return pres;
+
+		// Table styles are shared across the whole presentation, so load
+		// them once here. An empty map is fine — tables with no matching
+		// styleId will just use the per-cell XML.
+		pres.tableStyles = await loadTableStyles(pkg);
 
 		const sldSzEl = presDoc.getElementsByTagNameNS(A_NS.p, "sldSz")[0];
 		if (sldSzEl) {
