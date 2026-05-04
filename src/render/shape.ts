@@ -1,4 +1,5 @@
 import type { Shape } from '../presentation-parser';
+import type { ShapeEffects, OuterShadow, InnerShadow, Glow, SoftEdge, Reflection, Blur } from '../effects';
 import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
 import { solidColorFromFill, fillToCssBackground } from './fill-utils';
@@ -27,6 +28,9 @@ export function renderShape(shape: Shape, cls: string, embedUrls: Map<string, st
 	} else {
 		applyBoxFill(el, shape, embedUrls);
 	}
+
+	if (shape.effects) applyEffects(el, shape.effects);
+
 	const autoNumState: AutoNumState = new Map();
 	for (const p of shape.paragraphs) {
 		el.appendChild(renderParagraph(p, autoNumState));
@@ -56,6 +60,78 @@ function applyBoxFill(el: HTMLElement, shape: Shape, embedUrls: Map<string, stri
 	}
 }
 
+// Map a parsed <a:effectLst> onto CSS on the outer wrapper div.
+function applyEffects(el: HTMLElement, fx: ShapeEffects): void {
+	const boxShadows: string[] = [];
+	const filters: string[] = [];
+
+	if (fx.outerShadow) boxShadows.push(outerShadowToBoxShadow(fx.outerShadow));
+	if (fx.innerShadow) boxShadows.push(innerShadowToBoxShadow(fx.innerShadow));
+	if (fx.glow) boxShadows.push(glowToBoxShadow(fx.glow));
+
+	if (fx.blur) filters.push(blurToFilter(fx.blur));
+	if (fx.softEdge) filters.push(softEdgeToFilter(fx.softEdge));
+
+	if (boxShadows.length) el.style.boxShadow = boxShadows.join(', ');
+	if (filters.length) el.style.filter = filters.join(' ');
+
+	if (fx.reflection) {
+		const r = reflectionToWebkitBoxReflect(fx.reflection);
+		if (r) (el.style as CSSStyleDeclaration & { webkitBoxReflect?: string }).webkitBoxReflect = r;
+	}
+}
+
+function dirDistToOffsetPx(dir60k: number, distEmu: number): { dx: number; dy: number } {
+	const rad = (dir60k / 60000) * Math.PI / 180;
+	const distPx = emuToPx(distEmu);
+	return { dx: distPx * Math.cos(rad), dy: distPx * Math.sin(rad) };
+}
+
+function withAlpha(hex: string, alpha: number | null): string {
+	if (alpha == null || alpha >= 1) return hex;
+	const m = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex);
+	if (!m) return hex;
+	const r = parseInt(m[1], 16);
+	const g = parseInt(m[2], 16);
+	const b = parseInt(m[3], 16);
+	return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, alpha))})`;
+}
+
+function outerShadowToBoxShadow(s: OuterShadow): string {
+	const { dx, dy } = dirDistToOffsetPx(s.dir60k, s.distEmu);
+	const blurPx = emuToPx(s.blurRadEmu);
+	return `${dx.toFixed(2)}px ${dy.toFixed(2)}px ${blurPx.toFixed(2)}px ${withAlpha(s.colorHex, s.alpha)}`;
+}
+
+function innerShadowToBoxShadow(s: InnerShadow): string {
+	const { dx, dy } = dirDistToOffsetPx(s.dir60k, s.distEmu);
+	const blurPx = emuToPx(s.blurRadEmu);
+	return `inset ${dx.toFixed(2)}px ${dy.toFixed(2)}px ${blurPx.toFixed(2)}px ${withAlpha(s.colorHex, s.alpha)}`;
+}
+
+function glowToBoxShadow(g: Glow): string {
+	const radPx = emuToPx(g.radEmu);
+	return `0 0 ${radPx.toFixed(2)}px ${radPx.toFixed(2)}px ${withAlpha(g.colorHex, g.alpha)}`;
+}
+
+function blurToFilter(b: Blur): string {
+	const px = emuToPx(b.radEmu);
+	return `blur(${px.toFixed(2)}px)`;
+}
+
+function softEdgeToFilter(s: SoftEdge): string {
+	const px = emuToPx(s.radEmu);
+	return `blur(${px.toFixed(2)}px)`;
+}
+
+function reflectionToWebkitBoxReflect(r: Reflection): string | null {
+	const gapPx = emuToPx(r.distEmu);
+	const stA = Math.max(0, Math.min(1, r.stAPermille / 100000));
+	const endA = Math.max(0, Math.min(1, r.endAPermille / 100000));
+	const mask = `linear-gradient(to bottom, rgba(0,0,0,${stA.toFixed(3)}), rgba(0,0,0,${endA.toFixed(3)}))`;
+	return `below ${gapPx.toFixed(2)}px ${mask}`;
+}
+
 // Shared machinery that turns a (vbW, vbH, d) triple into an <svg> matching
 // the shape's fill/stroke styling. Used by both custGeom and presetGeom.
 function buildShapeSvg(shape: Shape, vbW: number, vbH: number, d: string, closed: boolean): SVGSVGElement {
@@ -64,8 +140,6 @@ function buildShapeSvg(shape: Shape, vbW: number, vbH: number, d: string, closed
 	svg.setAttribute("height", "100%");
 	svg.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
 	svg.setAttribute("preserveAspectRatio", "none");
-	// overflow:visible so a stroke at the edge isn't clipped by viewBox, but
-	// keep the SVG sized to the parent so content can't escape the shape box.
 	Object.assign(svg.style, { position: "absolute", left: "0", top: "0", width: "100%", height: "100%" });
 	const path = document.createElementNS(SVG_NS, "path");
 	path.setAttribute("d", d);
@@ -73,15 +147,10 @@ function buildShapeSvg(shape: Shape, vbW: number, vbH: number, d: string, closed
 	const strokeColor = solidColorFromFill(shape.line?.fill ?? null);
 	if (strokeColor) {
 		path.setAttribute("stroke", strokeColor);
-		// With vector-effect="non-scaling-stroke" the browser interprets
-		// stroke-width in screen (px) units regardless of the viewBox, so
-		// convert the EMU width accordingly.
 		const widthPx = shape.line!.widthEmu != null ? Math.max(emuToPx(shape.line!.widthEmu), 0.5) : 1;
 		path.setAttribute("stroke-width", String(widthPx));
 		path.setAttribute("vector-effect", "non-scaling-stroke");
 	} else if (!closed && shape.fill?.kind !== 'solid') {
-		// Open path with no fill and no line: fall back to a thin default
-		// stroke so the path is at least visible.
 		path.setAttribute("stroke", "#000");
 		path.setAttribute("stroke-width", "1");
 		path.setAttribute("vector-effect", "non-scaling-stroke");
@@ -91,8 +160,6 @@ function buildShapeSvg(shape: Shape, vbW: number, vbH: number, d: string, closed
 }
 
 export function renderCustGeomSvg(shape: Shape): SVGSVGElement {
-	// For a degenerate path (pathW or pathH is 0 — e.g. a horizontal line),
-	// fall back to the shape's EMU size to avoid a zero-area viewBox.
 	const vbW = shape.custGeom!.pathW || Math.max(shape.cx, 1);
 	const vbH = shape.custGeom!.pathH || Math.max(shape.cy, 1);
 	return buildShapeSvg(shape, vbW, vbH, shape.custGeom!.d, shape.custGeom!.closed);
@@ -104,8 +171,6 @@ export function renderPresetGeomSvg(shape: Shape): SVGSVGElement | null {
 	const vbH = Math.max(shape.cy, 1);
 	const d = presetToSvgPath(pg.name, vbW, vbH, pg.avLst);
 	if (d == null) return null;
-	// Every preset in our implemented set emits a closed silhouette except
-	// line / straightConnector1.
 	const closed = pg.name !== "line" && pg.name !== "straightConnector1";
 	return buildShapeSvg(shape, vbW, vbH, d, closed);
 }

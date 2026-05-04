@@ -1,6 +1,7 @@
 """Generate a minimal 2-slide .pptx fixture for development."""
 from pathlib import Path
 
+from lxml import etree
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -104,6 +105,97 @@ flipped_arrow.element.spPr.xfrm.set("flipH", "1")
 # A 45-degree rotated image.
 rot_img = rot_slide.shapes.add_picture(str(image_path), Inches(4), Inches(4), Inches(2), Inches(1))
 rot_img.rotation = 45
+# Slide exercising <a:effectLst>: outer shadow, glow, blur. python-pptx's
+# shadow_format API is too limited to emit <a:effectLst> directly, so we
+# splice the XML onto each shape's <p:spPr> with lxml.
+effects_slide = prs.slides.add_slide(prs.slide_layouts[5])
+effects_slide.shapes.title.text = "Effects"
+
+A_URI = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+
+def _append_effect_lst(shape, inner_xml):
+    """Append <a:effectLst>inner_xml</a:effectLst> to the shape's <p:spPr>."""
+    spPr = shape._element.spPr
+    # Remove any existing effectLst so re-runs stay idempotent.
+    for existing in spPr.findall(qn("a:effectLst")):
+        spPr.remove(existing)
+    effect_lst = etree.SubElement(spPr, qn("a:effectLst"))
+    fragment = etree.fromstring(f"<root xmlns:a='{A_URI}'>{inner_xml}</root>")
+    for child in fragment:
+        effect_lst.append(child)
+
+
+shadowed = effects_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(0.75), Inches(2), Inches(2.5), Inches(1.2)
+)
+shadowed.fill.solid()
+shadowed.fill.fore_color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+shadowed.text_frame.text = "Outer shadow"
+shadowed.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+_append_effect_lst(
+    shadowed,
+    '<a:outerShdw blurRad="50800" dist="38100" dir="2700000" algn="tl" rotWithShape="0">'
+    '<a:srgbClr val="000000"><a:alpha val="50000"/></a:srgbClr>'
+    "</a:outerShdw>",
+)
+
+glowing = effects_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(4), Inches(2), Inches(2.5), Inches(1.2)
+)
+glowing.fill.solid()
+glowing.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+glowing.line.color.rgb = RGBColor(0x00, 0x99, 0x66)
+glowing.text_frame.text = "Glow"
+_append_effect_lst(
+    glowing,
+    '<a:glow rad="63500">'
+    '<a:srgbClr val="00CC66"><a:alpha val="60000"/></a:srgbClr>'
+    "</a:glow>",
+)
+
+blurred = effects_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(7.25), Inches(2), Inches(2.5), Inches(1.2)
+)
+blurred.fill.solid()
+blurred.fill.fore_color.rgb = RGBColor(0xD9, 0x43, 0x6E)
+blurred.text_frame.text = "Blur"
+blurred.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+_append_effect_lst(blurred, '<a:blur rad="38100" grow="1"/>')
+
+inner_shadowed = effects_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(0.75), Inches(4), Inches(2.5), Inches(1.2)
+)
+inner_shadowed.fill.solid()
+inner_shadowed.fill.fore_color.rgb = RGBColor(0xF2, 0xF2, 0xF2)
+inner_shadowed.text_frame.text = "Inner shadow"
+_append_effect_lst(
+    inner_shadowed,
+    '<a:innerShdw blurRad="63500" dist="25400" dir="13500000">'
+    '<a:srgbClr val="000000"><a:alpha val="60000"/></a:srgbClr>'
+    "</a:innerShdw>",
+)
+
+soft_edge = effects_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(4), Inches(4), Inches(2.5), Inches(1.2)
+)
+soft_edge.fill.solid()
+soft_edge.fill.fore_color.rgb = RGBColor(0xF7, 0x96, 0x46)
+soft_edge.text_frame.text = "Soft edge"
+_append_effect_lst(soft_edge, '<a:softEdge rad="50800"/>')
+
+reflected = effects_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(7.25), Inches(4), Inches(2.5), Inches(1.2)
+)
+reflected.fill.solid()
+reflected.fill.fore_color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+reflected.text_frame.text = "Reflection"
+reflected.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+_append_effect_lst(
+    reflected,
+    '<a:reflection blurRad="6350" stA="50000" stPos="0" endA="300" endPos="50000"'
+    ' dist="38100" dir="5400000" sy="-100000" algn="bl" rotWithShape="0"/>',
+)
 
 # Slide with a table.
 table_slide = prs.slides.add_slide(prs.slide_layouts[5])

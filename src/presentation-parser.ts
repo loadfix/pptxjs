@@ -16,6 +16,7 @@ import {
 } from './text-style';
 import { ThemeColors, ClrMap, resolveSchemeClr, resolveTypeface } from './theme';
 import { SolidFill, Fill, LineStyle, parseSolidFill, parseFillElement, parseLine } from './fill';
+import { ShapeEffects, parseEffectsFromSpPr } from './effects';
 import { applyMods } from './color-math';
 
 export interface SlideSize {
@@ -117,6 +118,8 @@ export interface Shape {
 	// when both are set. `avLst` captures the shape's <a:gd> adjust values
 	// (e.g. adj1 → 15000) used to parameterise the preset silhouette.
 	presetGeom: { name: string; avLst: Map<string, number> } | null;
+	// Parsed <a:effectLst>. Null when no effects are present.
+	effects: ShapeEffects | null;
 	// Accessibility / descriptive metadata. Null when the PPTX didn't set it.
 	name: string | null;
 	title: string | null;
@@ -599,11 +602,12 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 	const line = parseLine(spPr ? firstChildNS(spPr, A_NS.a, "ln") : null, ctx.clrMap, ctx.theme);
 	const custGeom = spPr ? parseCustGeom(firstChildNS(spPr, A_NS.a, "custGeom")) : null;
 	const presetGeom = spPr ? parsePresetGeom(firstChildNS(spPr, A_NS.a, "prstGeom")) : null;
+	const effects = parseEffectsFromSpPr(spPr, ctx.clrMap, ctx.theme);
 
 	const nv = parseNonVisualProps(nvSpPr);
 	const hyperlinkRId = hyperlinkFromCNvPr(nvSpPr);
 
-	if (!frame && paragraphs.length === 0 && !fill && !line && !custGeom && !presetGeom) return null;
+	if (!frame && paragraphs.length === 0 && !fill && !line && !custGeom && !presetGeom && !effects) return null;
 	return {
 		kind: 'shape',
 		x: frame?.x ?? 0,
@@ -615,6 +619,7 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 		paragraphs,
 		custGeom,
 		presetGeom,
+		effects,
 		name: nv.name,
 		title: nv.title,
 		alt: nv.descr,
