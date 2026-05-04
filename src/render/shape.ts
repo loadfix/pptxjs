@@ -305,7 +305,16 @@ function reflectionToWebkitBoxReflect(r: Reflection): string | null {
 
 // Shared machinery that turns a (vbW, vbH, d) triple into an <svg> matching
 // the shape's fill/stroke styling. Used by both custGeom and presetGeom.
-function buildShapeSvg(shape: Shape, vbW: number, vbH: number, d: string, closed: boolean): SVGSVGElement {
+// `fillOverride === 'none'` forces the path's fill to "none" regardless of
+// shape.fill — used when <a:path fill="none"> explicitly suppresses fill.
+function buildShapeSvg(
+	shape: Shape,
+	vbW: number,
+	vbH: number,
+	d: string,
+	closed: boolean,
+	fillOverride?: 'none',
+): SVGSVGElement {
 	const svg = document.createElementNS(SVG_NS, "svg");
 	svg.setAttribute("width", "100%");
 	svg.setAttribute("height", "100%");
@@ -314,7 +323,10 @@ function buildShapeSvg(shape: Shape, vbW: number, vbH: number, d: string, closed
 	Object.assign(svg.style, { position: "absolute", left: "0", top: "0", width: "100%", height: "100%" });
 	const path = document.createElementNS(SVG_NS, "path");
 	path.setAttribute("d", d);
-	path.setAttribute("fill", shape.fill?.kind === 'solid' ? shape.fill.colorHex : "none");
+	const effectiveFill = fillOverride === 'none'
+		? "none"
+		: (shape.fill?.kind === 'solid' ? shape.fill.colorHex : "none");
+	path.setAttribute("fill", effectiveFill);
 	const strokeColor = solidColorFromFill(shape.line?.fill ?? null);
 	if (strokeColor) {
 		path.setAttribute("stroke", strokeColor);
@@ -322,7 +334,7 @@ function buildShapeSvg(shape: Shape, vbW: number, vbH: number, d: string, closed
 		path.setAttribute("stroke-width", String(widthPx));
 		path.setAttribute("vector-effect", "non-scaling-stroke");
 		applyStrokeStyling(svg, path, shape.line!, strokeColor);
-	} else if (!closed && shape.fill?.kind !== 'solid') {
+	} else if (!closed && effectiveFill === "none") {
 		path.setAttribute("stroke", "#000");
 		path.setAttribute("stroke-width", "1");
 		path.setAttribute("vector-effect", "non-scaling-stroke");
@@ -500,7 +512,8 @@ function renderDegenerateLineSvg(el: HTMLElement, shape: Shape): void {
 export function renderCustGeomSvg(shape: Shape): SVGSVGElement {
 	const vbW = shape.custGeom!.pathW || Math.max(shape.cx, 1);
 	const vbH = shape.custGeom!.pathH || Math.max(shape.cy, 1);
-	return buildShapeSvg(shape, vbW, vbH, shape.custGeom!.d, shape.custGeom!.closed);
+	const fillOverride = shape.custGeom!.fillMode === 'none' ? 'none' : undefined;
+	return buildShapeSvg(shape, vbW, vbH, shape.custGeom!.d, shape.custGeom!.closed, fillOverride);
 }
 
 export function renderPresetGeomSvg(shape: Shape): SVGSVGElement | null {
