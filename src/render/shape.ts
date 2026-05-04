@@ -1,10 +1,15 @@
 import type { Shape } from '../presentation-parser';
 import type { ShapeEffects, OuterShadow, InnerShadow, Glow, SoftEdge, Reflection, Blur } from '../effects';
+import type { LineStyle, LineEnd } from '../fill';
 import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
 import { renderParagraph, type AutoNumState, type FieldContext } from './text';
-import { solidColorFromFill, fillToCssBackground } from './fill-utils';
+import { solidColorFromFill, fillToCssBackground, lineDashToCss, svgDashArray } from './fill-utils';
 import { presetToSvgPath } from '../preset-geom';
 import { wrapInHyperlink } from './hyperlink';
+
+// Monotonically increasing id used to namespace marker defs so multiple
+// shapes on the same document don't collide on `url(#head-foo)`.
+let markerIdCounter = 0;
 
 export function renderShape(
 	shape: Shape,
@@ -29,7 +34,10 @@ export function renderShape(
 
 	// A degenerate "line" (zero cx or cy) can't render a path in zero area,
 	// so fall back to the background-band treatment even if custGeom is set.
+	// Exception: when the line carries an arrow head, we render a tiny inline
+	// SVG instead so the <marker> actually has something to attach to.
 	const isDegenerateLine = shape.cx === 0 || shape.cy === 0;
+	const hasArrowHead = lineHasArrowHead(shape.line);
 
 	if (shape.custGeom && !isDegenerateLine) {
 		el.appendChild(renderCustGeomSvg(shape));
@@ -41,6 +49,10 @@ export function renderShape(
 			// Unknown preset — fall back to the plain-box look.
 			applyBoxFill(el, shape, embedUrls);
 		}
+	} else if (isDegenerateLine && hasArrowHead && solidColorFromFill(shape.line?.fill ?? null)) {
+		// Arrow-head-bearing connector with a degenerate dimension — render
+		// as an oversized inline SVG so the marker has space to draw.
+		renderDegenerateLineSvg(el, shape);
 	} else {
 		applyBoxFill(el, shape, embedUrls);
 	}
@@ -94,9 +106,31 @@ function applyBoxFill(el: HTMLElement, shape: Shape, embedUrls: Map<string, stri
 			if (isHLine) el.style.height = `${widthPx}px`;
 			if (isVLine) el.style.width = `${widthPx}px`;
 		} else {
-			el.style.border = `${widthPx}px solid ${lineColor}`;
+			// cmpd=dbl maps cleanly to border-style: double. thickThin /
+			// thinThick have no CSS analogue — pick the thicker of the two
+			// visual weights and fall through to a single border. tri is
+			// unsupported and handled the same way.
+			const borderStyle = shape.line.cmpd === 'dbl'
+				? 'double'
+				: lineDashToCss(shape.line.dash);
+			// For `double`, CSS needs at least 3px of width to render two
+			// visible lines with a gap. Bump narrow double borders up.
+			const effectiveWidth = borderStyle === 'double'
+				? Math.max(widthPx, 3)
+				: widthPx;
+			el.style.border = `${effectiveWidth}px ${borderStyle} ${lineColor}`;
 		}
 	}
+}
+
+// True when the line has a non-'none' head or tail end marker. The parser
+// defaults `type` to 'none' when the attribute is omitted, so a present-but-
+// empty <a:headEnd/> also counts as no-arrow.
+function lineHasArrowHead(line: LineStyle | null | undefined): boolean {
+	if (!line) return false;
+	const h = line.headEnd?.type;
+	const t = line.tailEnd?.type;
+	return (h != null && h !== 'none') || (t != null && t !== 'none');
 }
 
 // Map a parsed <a:effectLst> onto CSS on the outer wrapper div.
@@ -189,6 +223,7 @@ function buildShapeSvg(shape: Shape, vbW: number, vbH: number, d: string, closed
 		const widthPx = shape.line!.widthEmu != null ? Math.max(emuToPx(shape.line!.widthEmu), 0.5) : 1;
 		path.setAttribute("stroke-width", String(widthPx));
 		path.setAttribute("vector-effect", "non-scaling-stroke");
+		applyStrokeStyling(svg, path, shape.line!, strokeColor);
 	} else if (!closed && shape.fill?.kind !== 'solid') {
 		path.setAttribute("stroke", "#000");
 		path.setAttribute("stroke-width", "1");
@@ -196,6 +231,172 @@ function buildShapeSvg(shape: Shape, vbW: number, vbH: number, d: string, closed
 	}
 	svg.appendChild(path);
 	return svg;
+}
+
+// Emit `stroke-dasharray`, `stroke-linecap`, `stroke-linejoin`, and
+// `marker-start`/`marker-end` on `path`, appending any required <marker>
+// defs to `svg`. Colour is passed in so the marker fill matches the stroke.
+function applyStrokeStyling(svg: SVGSVGElement, path: SVGPathElement, line: LineStyle, strokeColor: string): void {
+	const dashArr = svgDashArray(line.dash);
+	if (dashArr) path.setAttribute("stroke-dasharray", dashArr);
+
+	if (line.cap) {
+		const capMap = { flat: "butt", sq: "square", rnd: "round" } as const;
+		path.setAttribute("stroke-linecap", capMap[line.cap]);
+	}
+	if (line.join) {
+		// join values ('round' | 'bevel' | 'miter') already line up with SVG's.
+		path.setAttribute("stroke-linejoin", line.join);
+	}
+
+	const headMarkerId = line.headEnd && line.headEnd.type !== 'none'
+		? addArrowMarker(svg, line.headEnd, strokeColor, 'start')
+		: null;
+	const tailMarkerId = line.tailEnd && line.tailEnd.type !== 'none'
+		? addArrowMarker(svg, line.tailEnd, strokeColor, 'end')
+		: null;
+	if (headMarkerId) path.setAttribute("marker-start", `url(#${headMarkerId})`);
+	if (tailMarkerId) path.setAttribute("marker-end", `url(#${tailMarkerId})`);
+}
+
+// Translate w/len size hints onto a scale factor multiplied against stroke
+// width. Missing means "medium" per the DrawingML default.
+function endSizeFactor(hint: string | null): number {
+	switch (hint) {
+		case 'sm': return 1.5;
+		case 'lg': return 2.5;
+		case 'med':
+		case null:
+		case undefined:
+		default:
+			return 2;
+	}
+}
+
+// Add a <marker> def inside <svg><defs>, returning the id so it can be
+// referenced by the path. `orient` is 'start' (headEnd) or 'end' (tailEnd);
+// the marker path points right (+x) and `orient="auto"` handles the rest.
+function addArrowMarker(svg: SVGSVGElement, end: LineEnd, color: string, which: 'start' | 'end'): string | null {
+	const wFactor = endSizeFactor(end.w);
+	const lFactor = endSizeFactor(end.len);
+	// Each marker lives in its own 10x10 viewport; the path is oriented so
+	// the tip is at (10, 5) and the base at (0, 0)→(0, 10). Marker units are
+	// "strokeWidth" so stroke-width pixels become 1 user unit.
+	const vbW = 10;
+	const vbH = 10;
+	let d: string;
+	let markerFill: string | 'none' = color;
+	let markerStroke: string | 'none' = 'none';
+	switch (end.type) {
+		case 'triangle':
+			d = `M 0 0 L 10 5 L 0 10 Z`;
+			break;
+		case 'arrow':
+			// Open arrowhead — two strokes meeting at a point.
+			d = `M 0 0 L 10 5 L 0 10`;
+			markerFill = 'none';
+			markerStroke = color;
+			break;
+		case 'stealth':
+			// Concave "stealth" — like triangle but with notched base.
+			d = `M 0 0 L 10 5 L 0 10 L 4 5 Z`;
+			break;
+		case 'diamond':
+			d = `M 0 5 L 5 0 L 10 5 L 5 10 Z`;
+			break;
+		case 'oval':
+			// Marker ellipse as a path (circle approximation via 4 arcs).
+			d = `M 0 5 A 5 5 0 1 0 10 5 A 5 5 0 1 0 0 5 Z`;
+			break;
+		case 'none':
+		default:
+			return null;
+	}
+
+	markerIdCounter += 1;
+	const id = `pptxjs-arrow-${markerIdCounter}`;
+
+	// Lazy <defs> — reuse if already present so multiple arrows on the same
+	// shape share a single <defs> node.
+	let defs = svg.querySelector("defs");
+	if (!defs) {
+		defs = document.createElementNS(SVG_NS, "defs");
+		svg.insertBefore(defs, svg.firstChild);
+	}
+
+	const marker = document.createElementNS(SVG_NS, "marker");
+	marker.setAttribute("id", id);
+	marker.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
+	marker.setAttribute("markerUnits", "strokeWidth");
+	// Size scales per w/len hints; len governs along-axis length, w governs
+	// perpendicular width.
+	marker.setAttribute("markerWidth", String(lFactor * 3));
+	marker.setAttribute("markerHeight", String(wFactor * 3));
+	marker.setAttribute("refX", which === 'start' ? "0" : "10");
+	marker.setAttribute("refY", "5");
+	marker.setAttribute("orient", "auto");
+	const mp = document.createElementNS(SVG_NS, "path");
+	mp.setAttribute("d", d);
+	mp.setAttribute("fill", markerFill);
+	if (markerStroke !== 'none') {
+		mp.setAttribute("stroke", markerStroke);
+		mp.setAttribute("stroke-width", "1.5");
+		mp.setAttribute("stroke-linecap", "butt");
+		mp.setAttribute("stroke-linejoin", "miter");
+	}
+	marker.appendChild(mp);
+	defs.appendChild(marker);
+	return id;
+}
+
+// Render a degenerate-dimension line (cx=0 or cy=0) as an SVG so arrow-head
+// markers have room to draw. Expands the container slightly along the
+// vanishing axis so the marker isn't clipped. Uses pixel coordinates in the
+// viewBox so marker sizing doesn't get skewed by preserveAspectRatio scaling.
+function renderDegenerateLineSvg(el: HTMLElement, shape: Shape): void {
+	const lineColor = solidColorFromFill(shape.line!.fill ?? null)!;
+	const widthPx = shape.line!.widthEmu != null ? Math.max(emuToPx(shape.line!.widthEmu), 0.5) : 1;
+	// Rough marker size budget — diameter of the largest marker we'll draw,
+	// in pixels. `endSizeFactor` tops out at 2.5x, and markerUnits=strokeWidth
+	// means actual size = factor * 3 * strokeWidth. Use a safety margin.
+	const tailFactor = Math.max(endSizeFactor(shape.line!.headEnd?.len ?? null), endSizeFactor(shape.line!.tailEnd?.len ?? null));
+	const marginPx = Math.ceil(tailFactor * 3 * widthPx) + 2;
+	const isHLine = shape.cy === 0;
+	const lengthPx = isHLine ? emuToPx(shape.cx) : emuToPx(shape.cy);
+	const thicknessPx = widthPx + 2 * marginPx;
+
+	// Override the bounding box so the SVG has some area to render into, and
+	// offset it so the centerline aligns with the original box.
+	if (isHLine) {
+		el.style.height = `${thicknessPx}px`;
+		el.style.top = `${emuToPx(shape.y) - marginPx}px`;
+	} else {
+		el.style.width = `${thicknessPx}px`;
+		el.style.left = `${emuToPx(shape.x) - marginPx}px`;
+	}
+
+	const vbW = isHLine ? lengthPx : thicknessPx;
+	const vbH = isHLine ? thicknessPx : lengthPx;
+	const svg = document.createElementNS(SVG_NS, "svg");
+	svg.setAttribute("width", "100%");
+	svg.setAttribute("height", "100%");
+	svg.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
+	// Preserve aspect ratio so markers render as squares, not stretched.
+	svg.setAttribute("preserveAspectRatio", "none");
+	Object.assign(svg.style, { position: "absolute", left: "0", top: "0", width: "100%", height: "100%", overflow: "visible" });
+	const path = document.createElementNS(SVG_NS, "path");
+	// Draw the line through the middle of the thickness axis.
+	const mid = thicknessPx / 2;
+	path.setAttribute(
+		"d",
+		isHLine ? `M 0 ${mid} L ${lengthPx} ${mid}` : `M ${mid} 0 L ${mid} ${lengthPx}`,
+	);
+	path.setAttribute("fill", "none");
+	path.setAttribute("stroke", lineColor);
+	path.setAttribute("stroke-width", String(widthPx));
+	applyStrokeStyling(svg, path, shape.line!, lineColor);
+	svg.appendChild(path);
+	el.appendChild(svg);
 }
 
 export function renderCustGeomSvg(shape: Shape): SVGSVGElement {
