@@ -15,7 +15,7 @@ import {
 	mergeParaStyle,
 } from './text-style';
 import { ThemeColors, ClrMap, resolveSchemeClr, resolveTypeface } from './theme';
-import { SolidFill, LineStyle, parseSolidFill, parseLine } from './fill';
+import { SolidFill, Fill, LineStyle, parseSolidFill, parseFillElement, parseLine } from './fill';
 import { applyMods } from './color-math';
 
 export interface SlideSize {
@@ -31,6 +31,42 @@ export interface Slide {
 
 export type ShapeLike = Shape | PicShape | TableShape;
 
+// Non-visual descriptive metadata extracted from <p:cNvPr>. Shared across
+// every shape kind (sp, pic, cxnSp, graphicFrame, grpSp).
+export interface NonVisualProps {
+	name: string | null;
+	title: string | null;
+	descr: string | null;
+}
+
+export function emptyNonVisualProps(): NonVisualProps {
+	return { name: null, title: null, descr: null };
+}
+
+// Parse the <p:cNvPr> child of any <p:nvSpPr>/<p:nvPicPr>/<p:nvCxnSpPr>
+// etc. The `nvSpPrLike` argument is the wrapper element containing cNvPr —
+// callers pass e.g. firstChildNS(sp, A_NS.p, "nvSpPr").
+export function parseNonVisualProps(nvSpPrLike: Element | null): NonVisualProps {
+	const out = emptyNonVisualProps();
+	if (!nvSpPrLike) return out;
+	const cNvPr = firstChildNS(nvSpPrLike, A_NS.p, "cNvPr");
+	if (!cNvPr) return out;
+	out.name = cNvPr.getAttribute("name") || null;
+	out.title = cNvPr.getAttribute("title") || null;
+	out.descr = cNvPr.getAttribute("descr") || null;
+	return out;
+}
+
+// Find the <a:hlinkClick> child of a <p:cNvPr> element, if any.
+function hyperlinkFromCNvPr(nvSpPrLike: Element | null): string | null {
+	if (!nvSpPrLike) return null;
+	const cNvPr = firstChildNS(nvSpPrLike, A_NS.p, "cNvPr");
+	if (!cNvPr) return null;
+	const hlinkClick = firstChildNS(cNvPr, A_NS.a, "hlinkClick");
+	if (!hlinkClick) return null;
+	return hlinkClick.getAttributeNS(A_NS.r, "id") || null;
+}
+
 export interface TableShape {
 	kind: 'table';
 	x: number;
@@ -39,6 +75,13 @@ export interface TableShape {
 	cy: number;
 	colWidthsEmu: number[];
 	rows: TableRow[];
+	// Shared shape metadata.
+	name: string | null;
+	title: string | null;
+	alt: string | null;
+	rotation60k: number;
+	flipH: boolean;
+	flipV: boolean;
 }
 
 export interface TableRow {
@@ -64,12 +107,22 @@ export interface Shape {
 	y: number;
 	cx: number;
 	cy: number;
-	fill: SolidFill | null;
+	fill: Fill | null;
 	line: LineStyle | null;
 	paragraphs: Paragraph[];
 	// Custom geometry (<a:custGeom>), if any. Null for preset/no geometry.
 	// When present, the renderer produces an SVG path instead of a plain box.
 	custGeom: CustGeom | null;
+	// Accessibility / descriptive metadata. Null when the PPTX didn't set it.
+	name: string | null;
+	title: string | null;
+	alt: string | null;
+	// Click-hyperlink rId from <p:cNvPr><a:hlinkClick>.
+	hyperlinkRId: string | null;
+	// Rotation in 60000ths of a degree. flipH/flipV are the xfrm boolean flags.
+	rotation60k: number;
+	flipH: boolean;
+	flipV: boolean;
 }
 
 // Minimal <a:custGeom> representation — a single path with the local
@@ -96,6 +149,12 @@ export interface PicShape {
 	// relationship couldn't be resolved — render as an empty box.
 	src: string | null;
 	alt: string;
+	name: string | null;
+	title: string | null;
+	hyperlinkRId: string | null;
+	rotation60k: number;
+	flipH: boolean;
+	flipV: boolean;
 }
 
 export interface Paragraph {
@@ -104,8 +163,28 @@ export interface Paragraph {
 	runs: Run[];
 }
 
-export interface Run {
+// Runs now come in three flavours:
+//   - TextRun: ordinary <a:r><a:t>text</a:t></a:r>.
+//   - BreakRun: <a:br/>, a hard line break within a paragraph.
+//   - FieldRun: <a:fld type="slidenum|..."/>, auto-populated text (slide
+//     number, footer, date). `fallbackText` is the embedded <a:t> content
+//     used when the field can't be resolved by the renderer.
+export type Run = TextRun | BreakRun | FieldRun;
+
+export interface TextRun {
+	kind: 'text';
 	text: string;
+	style: RunStyle;
+}
+
+export interface BreakRun {
+	kind: 'break';
+}
+
+export interface FieldRun {
+	kind: 'field';
+	fieldType: string;
+	fallbackText: string;
 	style: RunStyle;
 }
 
@@ -114,6 +193,9 @@ export interface PlaceholderFrame {
 	y: number;
 	cx: number;
 	cy: number;
+	rotation60k: number;
+	flipH: boolean;
+	flipV: boolean;
 }
 
 export interface PlaceholderInfo {
@@ -360,6 +442,9 @@ function parseGraphicFrame(gf: Element, ctx: SlideParseContext): TableShape | nu
 	const y = off ? Number(off.getAttribute("y")) || 0 : 0;
 	const cx = ext ? Number(ext.getAttribute("cx")) || 0 : 0;
 	const cy = ext ? Number(ext.getAttribute("cy")) || 0 : 0;
+	const rotation60k = xfrm ? Number(xfrm.getAttribute("rot")) || 0 : 0;
+	const flipH = xfrm?.getAttribute("flipH") === "1";
+	const flipV = xfrm?.getAttribute("flipV") === "1";
 
 	const graphic = firstChildNS(gf, A_NS.a, "graphic");
 	const graphicData = graphic && firstChildNS(graphic, A_NS.a, "graphicData");
@@ -378,7 +463,22 @@ function parseGraphicFrame(gf: Element, ctx: SlideParseContext): TableShape | nu
 	for (const trEl of childrenNS(tbl, A_NS.a, "tr")) {
 		rows.push(parseTableRow(trEl, ctx));
 	}
-	return { kind: 'table', x, y, cx, cy, colWidthsEmu, rows };
+
+	const nvGraphicFramePr = firstChildNS(gf, A_NS.p, "nvGraphicFramePr");
+	const nv = parseNonVisualProps(nvGraphicFramePr);
+
+	return {
+		kind: 'table',
+		x, y, cx, cy,
+		colWidthsEmu,
+		rows,
+		name: nv.name,
+		title: nv.title,
+		alt: nv.descr,
+		rotation60k,
+		flipH,
+		flipV,
+	};
 }
 
 function parseTableRow(tr: Element, ctx: SlideParseContext): TableRow {
@@ -403,7 +503,7 @@ function parseTableCell(tc: Element, ctx: SlideParseContext): TableCell {
 	const paragraphs: Paragraph[] = [];
 	if (txBody) {
 		const cellLstStyle = firstChildNS(txBody, A_NS.a, "lstStyle");
-		const cellLevelStyles = parseLevelStyles(cellLstStyle);
+		const cellLevelStyles = parseLevelStyles(cellLstStyle, ctx.clrMap, ctx.theme);
 		for (const pEl of childrenNS(txBody, A_NS.a, "p")) {
 			// Table cells aren't placeholders, so no ph-based inheritance.
 			paragraphs.push(parseParagraph(pEl, null, null, cellLevelStyles, ctx));
@@ -422,8 +522,9 @@ function parsePic(pic: Element, ctx: SlideParseContext): PicShape | null {
 	const src = rId ? (ctx.embedUrls.get(rId) ?? null) : null;
 
 	const nvPicPr = firstChildNS(pic, A_NS.p, "nvPicPr");
-	const cNvPr = nvPicPr && firstChildNS(nvPicPr, A_NS.p, "cNvPr");
-	const alt = cNvPr?.getAttribute("descr") ?? cNvPr?.getAttribute("name") ?? "";
+	const nv = parseNonVisualProps(nvPicPr);
+	const alt = nv.descr ?? nv.name ?? "";
+	const hyperlinkRId = hyperlinkFromCNvPr(nvPicPr);
 
 	if (!frame && !src) return null;
 	return {
@@ -434,6 +535,12 @@ function parsePic(pic: Element, ctx: SlideParseContext): PicShape | null {
 		cy: frame?.cy ?? 0,
 		src,
 		alt,
+		name: nv.name,
+		title: nv.title,
+		hyperlinkRId,
+		rotation60k: frame?.rotation60k ?? 0,
+		flipH: frame?.flipH ?? false,
+		flipV: frame?.flipV ?? false,
 	};
 }
 
@@ -443,7 +550,8 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 
 	// Resolve the placeholder type (if any) — drives both geometry and
 	// default text-style inheritance.
-	const nvSpPr = firstChildNS(sp, A_NS.p, "nvSpPr");
+	const nvSpPr = firstChildNS(sp, A_NS.p, "nvSpPr")
+		?? firstChildNS(sp, A_NS.p, "nvCxnSpPr");
 	const nvPr = nvSpPr && firstChildNS(nvSpPr, A_NS.p, "nvPr");
 	const ph = nvPr && firstChildNS(nvPr, A_NS.p, "ph");
 	const phType = ph ? normalizePhType(ph.getAttribute("type")) : null;
@@ -458,7 +566,7 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 
 	const txBody = firstChildNS(sp, A_NS.p, "txBody");
 	const shapeLstStyle = txBody ? firstChildNS(txBody, A_NS.a, "lstStyle") : null;
-	const shapeLevelStyles = parseLevelStyles(shapeLstStyle);
+	const shapeLevelStyles = parseLevelStyles(shapeLstStyle, ctx.clrMap, ctx.theme);
 
 	const paragraphs: Paragraph[] = [];
 	if (txBody) {
@@ -468,10 +576,27 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 	}
 
 	// Shape fill & border. Non-placeholder shapes often carry these directly;
-	// placeholders can also override the inherited look.
-	const fill = parseSolidFill(spPr ? firstChildNS(spPr, A_NS.a, "solidFill") : null, ctx.clrMap, ctx.theme);
+	// placeholders can also override the inherited look. We look for any fill
+	// child kind, not just solidFill.
+	let fill: Fill | null = null;
+	if (spPr) {
+		for (const child of Array.from(spPr.children)) {
+			if (child.namespaceURI !== A_NS.a) continue;
+			const ln = child.localName;
+			if (
+				ln === 'solidFill' || ln === 'noFill' || ln === 'gradFill'
+				|| ln === 'blipFill' || ln === 'pattFill'
+			) {
+				fill = parseFillElement(child, ctx.clrMap, ctx.theme);
+				break;
+			}
+		}
+	}
 	const line = parseLine(spPr ? firstChildNS(spPr, A_NS.a, "ln") : null, ctx.clrMap, ctx.theme);
 	const custGeom = spPr ? parseCustGeom(firstChildNS(spPr, A_NS.a, "custGeom")) : null;
+
+	const nv = parseNonVisualProps(nvSpPr);
+	const hyperlinkRId = hyperlinkFromCNvPr(nvSpPr);
 
 	if (!frame && paragraphs.length === 0 && !fill && !line && !custGeom) return null;
 	return {
@@ -484,6 +609,13 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 		line,
 		paragraphs,
 		custGeom,
+		name: nv.name,
+		title: nv.title,
+		alt: nv.descr,
+		hyperlinkRId,
+		rotation60k: frame?.rotation60k ?? 0,
+		flipH: frame?.flipH ?? false,
+		flipV: frame?.flipV ?? false,
 	};
 }
 
@@ -546,11 +678,17 @@ function readXfrm(spPr: Element | null): PlaceholderFrame | null {
 	const cx = Number(ext.getAttribute("cx")) || 0;
 	const cy = Number(ext.getAttribute("cy")) || 0;
 	if (cx === 0 && cy === 0) return null;
+	const rotation60k = Number(xfrm.getAttribute("rot")) || 0;
+	const flipH = xfrm.getAttribute("flipH") === "1";
+	const flipV = xfrm.getAttribute("flipV") === "1";
 	return {
 		x: Number(off.getAttribute("x")) || 0,
 		y: Number(off.getAttribute("y")) || 0,
 		cx,
 		cy,
+		rotation60k,
+		flipH,
+		flipV,
 	};
 }
 
@@ -590,28 +728,54 @@ function parseParagraph(
 	applyLevel(shapeLevelStyles[level] ?? null);
 
 	// Paragraph's own pPr overrides (attributes + children like <a:buChar>).
-	if (pPr) basePara = mergeParaStyle(basePara, parseParaProps(pPr));
+	if (pPr) basePara = mergeParaStyle(basePara, parseParaProps(pPr, ctx.clrMap, ctx.theme));
 	const pDefRPr = pPr ? firstChildNS(pPr, A_NS.a, "defRPr") : null;
-	if (pDefRPr) baseRun = mergeRunStyle(baseRun, parseRunProps(pDefRPr));
+	if (pDefRPr) baseRun = mergeRunStyle(baseRun, parseRunProps(pDefRPr, ctx.clrMap, ctx.theme));
 
 	const runs: Run[] = [];
-	for (const rEl of childrenNS(pEl, A_NS.a, "r")) {
-		const tEl = firstChildNS(rEl, A_NS.a, "t");
-		const rPr = firstChildNS(rEl, A_NS.a, "rPr");
-		const runOverrides = parseRunProps(rPr);
-		const style = mergeRunStyle(baseRun, runOverrides);
-		if (!style.colorHex && style.colorSchemeSlot) {
-			const base = resolveSchemeClr(style.colorSchemeSlot, ctx.clrMap, ctx.theme);
-			if (base) {
-				style.colorHex = style.colorMods ? applyMods(base, style.colorMods) : base;
-			}
+	for (const rEl of Array.from(pEl.children)) {
+		if (rEl.namespaceURI !== A_NS.a) continue;
+		const ln = rEl.localName;
+		if (ln === 'r') {
+			runs.push(buildTextRun(rEl, baseRun, ctx));
+		} else if (ln === 'br') {
+			runs.push({ kind: 'break' });
+		} else if (ln === 'fld') {
+			runs.push(buildFieldRun(rEl, baseRun, ctx));
 		}
-		// Resolve theme font references (e.g. "+mj-lt") to concrete families.
-		style.fontFamily = resolveTypeface(style.fontFamily, ctx.theme);
-		runs.push({
-			text: tEl?.textContent ?? "",
-			style,
-		});
 	}
 	return { level, style: basePara, runs };
+}
+
+function resolveRunStyle(style: RunStyle, ctx: SlideParseContext): RunStyle {
+	if (!style.colorHex && style.colorSchemeSlot) {
+		const base = resolveSchemeClr(style.colorSchemeSlot, ctx.clrMap, ctx.theme);
+		if (base) {
+			style.colorHex = style.colorMods ? applyMods(base, style.colorMods) : base;
+		}
+	}
+	style.fontFamily = resolveTypeface(style.fontFamily, ctx.theme);
+	return style;
+}
+
+function buildTextRun(rEl: Element, baseRun: RunStyle, ctx: SlideParseContext): TextRun {
+	const tEl = firstChildNS(rEl, A_NS.a, "t");
+	const rPr = firstChildNS(rEl, A_NS.a, "rPr");
+	const runOverrides = parseRunProps(rPr, ctx.clrMap, ctx.theme);
+	const style = resolveRunStyle(mergeRunStyle(baseRun, runOverrides), ctx);
+	return { kind: 'text', text: tEl?.textContent ?? "", style };
+}
+
+function buildFieldRun(fldEl: Element, baseRun: RunStyle, ctx: SlideParseContext): FieldRun {
+	const fieldType = fldEl.getAttribute("type") ?? "";
+	const tEl = firstChildNS(fldEl, A_NS.a, "t");
+	const rPr = firstChildNS(fldEl, A_NS.a, "rPr");
+	const runOverrides = parseRunProps(rPr, ctx.clrMap, ctx.theme);
+	const style = resolveRunStyle(mergeRunStyle(baseRun, runOverrides), ctx);
+	return {
+		kind: 'field',
+		fieldType,
+		fallbackText: tEl?.textContent ?? "",
+		style,
+	};
 }

@@ -1,4 +1,4 @@
-import type { Paragraph, Run } from '../presentation-parser';
+import type { Paragraph, Run, TextRun } from '../presentation-parser';
 
 // Counters for auto-numbered bullets within the current shape, keyed by
 // paragraph level. Reset at each new shape.
@@ -81,13 +81,27 @@ export function toRoman(n: number): string {
 }
 
 export function renderRun(run: Run): HTMLElement {
+	// Wave 2 — render BreakRun as <br>, FieldRun via field substitution.
+	if (run.kind === 'break') {
+		return document.createElement("br");
+	}
+	if (run.kind === 'field') {
+		const el = document.createElement("span");
+		el.textContent = run.fallbackText;
+		applyRunStyle(el, run.style);
+		return el;
+	}
+	// kind === 'text'
 	const el = document.createElement("span");
 	el.textContent = run.text;
-	const s = run.style;
+	applyRunStyle(el, run.style);
+	return el;
+}
+
+function applyRunStyle(el: HTMLElement, s: TextRun['style']): void {
 	if (s.bold) el.style.fontWeight = "bold";
 	if (s.italic) el.style.fontStyle = "italic";
 	if (s.sizeHundredths != null) el.style.fontSize = `${s.sizeHundredths / 100}pt`;
 	if (s.colorHex) el.style.color = s.colorHex;
 	if (s.fontFamily) el.style.fontFamily = s.fontFamily;
-	return el;
 }

@@ -1,6 +1,7 @@
 import type { Shape } from '../presentation-parser';
 import { emuToPx, positionStyle, SVG_NS } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
+import { solidColorFromFill } from './fill-utils';
 
 export function renderShape(shape: Shape, cls: string): HTMLElement {
 	const el = document.createElement("div");
@@ -15,16 +16,18 @@ export function renderShape(shape: Shape, cls: string): HTMLElement {
 		el.appendChild(renderCustGeomSvg(shape));
 	} else {
 		if (shape.fill?.kind === 'solid') el.style.background = shape.fill.colorHex;
-		if (shape.line && shape.line.fill && shape.line.fill.colorHex) {
+		// Wave 2 — render non-solid line fills (gradient/blip/pattern) properly.
+		const lineColor = solidColorFromFill(shape.line?.fill ?? null);
+		if (shape.line && lineColor) {
 			const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;
 			const isHLine = shape.cy === 0;
 			const isVLine = shape.cx === 0;
 			if (isHLine || isVLine) {
-				el.style.background = shape.line.fill.colorHex;
+				el.style.background = lineColor;
 				if (isHLine) el.style.height = `${widthPx}px`;
 				if (isVLine) el.style.width = `${widthPx}px`;
 			} else {
-				el.style.border = `${widthPx}px solid ${shape.line.fill.colorHex}`;
+				el.style.border = `${widthPx}px solid ${lineColor}`;
 			}
 		}
 	}
@@ -51,12 +54,13 @@ export function renderCustGeomSvg(shape: Shape): SVGSVGElement {
 	const path = document.createElementNS(SVG_NS, "path");
 	path.setAttribute("d", shape.custGeom!.d);
 	path.setAttribute("fill", shape.fill?.kind === 'solid' ? shape.fill.colorHex : "none");
-	if (shape.line?.fill?.colorHex) {
-		path.setAttribute("stroke", shape.line.fill.colorHex);
+	const strokeColor = solidColorFromFill(shape.line?.fill ?? null);
+	if (strokeColor) {
+		path.setAttribute("stroke", strokeColor);
 		// With vector-effect="non-scaling-stroke" the browser interprets
 		// stroke-width in screen (px) units regardless of the viewBox, so
 		// convert the EMU width accordingly.
-		const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;
+		const widthPx = shape.line!.widthEmu != null ? Math.max(emuToPx(shape.line!.widthEmu), 0.5) : 1;
 		path.setAttribute("stroke-width", String(widthPx));
 		path.setAttribute("vector-effect", "non-scaling-stroke");
 	} else if (!shape.custGeom!.closed && shape.fill?.kind !== 'solid') {
