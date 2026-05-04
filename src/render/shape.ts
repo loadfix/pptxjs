@@ -1,5 +1,5 @@
 import type { Shape } from '../presentation-parser';
-import { emuToPx, positionStyle, SVG_NS } from './geom';
+import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
 import { solidColorFromFill } from './fill-utils';
 import { presetToSvgPath } from '../preset-geom';
@@ -8,6 +8,7 @@ export function renderShape(shape: Shape, cls: string): HTMLElement {
 	const el = document.createElement("div");
 	el.className = `${cls}-shape`;
 	Object.assign(el.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
+	Object.assign(el.style, transformStyle(shape.rotation60k, shape.flipH, shape.flipV));
 
 	// A degenerate "line" (zero cx or cy) can't render a path in zero area,
 	// so fall back to the background-band treatment even if custGeom is set.

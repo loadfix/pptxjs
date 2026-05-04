@@ -1,10 +1,11 @@
 import type { PicShape } from '../presentation-parser';
-import { positionStyle } from './geom';
+import { positionStyle, transformStyle } from './geom';
 
 export function renderPic(pic: PicShape, cls: string): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-pic`;
 	Object.assign(wrap.style, positionStyle(pic.x, pic.y, pic.cx, pic.cy));
+	Object.assign(wrap.style, transformStyle(pic.rotation60k, pic.flipH, pic.flipV));
 	if (pic.src) {
 		const img = document.createElement("img");
 		img.src = pic.src;

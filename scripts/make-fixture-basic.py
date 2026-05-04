@@ -81,6 +81,28 @@ for shape_enum, col, row in presets:
     s.fill.fore_color.rgb = RGBColor(0x4F, 0x81, 0xBD)
     s.line.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
 
+# Slide exercising rotation + flipH/flipV (Wave 2, P2).
+rot_slide = prs.slides.add_slide(prs.slide_layouts[5])
+rot_slide.shapes.title.text = "Rotated & flipped"
+
+# Text box rotated 30 degrees.
+rtb = rot_slide.shapes.add_textbox(Inches(1), Inches(2), Inches(3), Inches(1))
+rtb.rotation = 30
+rrun = rtb.text_frame.paragraphs[0].add_run()
+rrun.text = "Rotated 30 degrees"
+rrun.font.size = Pt(20)
+
+# Right-arrow shape, horizontally flipped.
+flipped_arrow = rot_slide.shapes.add_shape(MSO_SHAPE.RIGHT_ARROW, Inches(5), Inches(2), Inches(2), Inches(1))
+flipped_arrow.fill.solid()
+flipped_arrow.fill.fore_color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+# python-pptx doesn't expose flipH directly; poke the xfrm element.
+flipped_arrow.element.spPr.xfrm.set("flipH", "1")
+
+# A 45-degree rotated image.
+rot_img = rot_slide.shapes.add_picture(str(image_path), Inches(4), Inches(4), Inches(2), Inches(1))
+rot_img.rotation = 45
+
 # Slide with a table.
 table_slide = prs.slides.add_slide(prs.slide_layouts[5])
 table_slide.shapes.title.text = "A table"
