@@ -27,6 +27,44 @@ export interface Slide {
 	index: number;
 	shapes: ShapeLike[];
 	background: import('./background').BackgroundFill | null;
+	// Header/footer placeholder visibility flags, from <p:cSld><p:hf>.
+	// Missing attributes default to true (visible) per the schema.
+	hf: HeaderFooterFlags;
+	// Resolved footer / header / datetime text. Comes from the slide's own
+	// placeholder shapes if present, otherwise from its layout. Used to
+	// substitute `ftr` / `hdr` / `dt` field runs at render time.
+	footerText: string | null;
+	headerText: string | null;
+	datetimeText: string | null;
+}
+
+export interface HeaderFooterFlags {
+	sldNum: boolean;
+	hdr: boolean;
+	ftr: boolean;
+	dt: boolean;
+}
+
+export function emptyHeaderFooterFlags(): HeaderFooterFlags {
+	return { sldNum: true, hdr: true, ftr: true, dt: true };
+}
+
+// Parse <p:cSld><p:hf ... /> — attributes `sldNum`, `hdr`, `ftr`, `dt`
+// are "1"/"0"; a missing attribute means visible.
+export function parseHeaderFooterFlags(cSld: Element | null): HeaderFooterFlags {
+	const out = emptyHeaderFooterFlags();
+	if (!cSld) return out;
+	const hf = firstChildNS(cSld, A_NS.p, "hf");
+	if (!hf) return out;
+	const read = (name: string) => {
+		const v = hf.getAttribute(name);
+		return v === null ? true : v !== "0";
+	};
+	out.sldNum = read("sldNum");
+	out.hdr = read("hdr");
+	out.ftr = read("ftr");
+	out.dt = read("dt");
+	return out;
 }
 
 export type ShapeLike = Shape | PicShape | TableShape;
@@ -123,6 +161,11 @@ export interface Shape {
 	rotation60k: number;
 	flipH: boolean;
 	flipV: boolean;
+	// Normalized placeholder type from <p:ph type="..."> (e.g. "sldNum",
+	// "ftr", "hdr", "dt", "title", "body"). Null for non-placeholder shapes.
+	// Consumed by the renderer so it can skip sldNum/ftr/hdr/dt placeholders
+	// when the slide's <p:hf> flag disables them.
+	phType: string | null;
 }
 
 // Minimal <a:custGeom> representation — a single path with the local
@@ -293,9 +336,59 @@ export interface SlideParseContext {
 
 export function parseSlide(doc: Document, index: number, ctx: SlideParseContext): Slide {
 	const shapes: ShapeLike[] = [];
-	const spTree = firstChildNS(firstChildNS(doc.documentElement, A_NS.p, "cSld"), A_NS.p, "spTree");
+	const cSld = firstChildNS(doc.documentElement, A_NS.p, "cSld");
+	const spTree = firstChildNS(cSld, A_NS.p, "spTree");
 	if (spTree) walkSpTree(spTree, shapes, ctx);
-	return { index, shapes, background: null };
+	const hf = parseHeaderFooterFlags(cSld);
+	// Pull placeholder text for ftr/hdr/dt so FieldRuns can substitute even
+	// when the slide itself has no dedicated placeholder shape (the layout's
+	// text is the cascade fallback).
+	const phText = extractHfPlaceholderText(shapes);
+	return {
+		index,
+		shapes,
+		background: null,
+		hf,
+		footerText: phText.ftr,
+		headerText: phText.hdr,
+		datetimeText: phText.dt,
+	};
+}
+
+// Walk a shape list and pull plain text from sldNum/ftr/hdr/dt placeholders.
+// Used to resolve `ftr` / `hdr` / `dt` field substitution — PowerPoint stores
+// the actual footer/header string inside a placeholder shape whose ph.type
+// marks its role.
+export function extractHfPlaceholderText(shapes: ShapeLike[]): {
+	ftr: string | null; hdr: string | null; dt: string | null;
+} {
+	let ftr: string | null = null;
+	let hdr: string | null = null;
+	let dt: string | null = null;
+	for (const s of shapes) {
+		if (s.kind !== 'shape' || !s.phType) continue;
+		const txt = paragraphsPlainText(s.paragraphs);
+		if (!txt) continue;
+		if (s.phType === 'ftr' && ftr === null) ftr = txt;
+		else if (s.phType === 'hdr' && hdr === null) hdr = txt;
+		else if (s.phType === 'dt' && dt === null) dt = txt;
+	}
+	return { ftr, hdr, dt };
+}
+
+function paragraphsPlainText(paras: Paragraph[]): string {
+	const lines: string[] = [];
+	for (const p of paras) {
+		let s = "";
+		for (const r of p.runs) {
+			if (r.kind === 'text') s += r.text;
+			else if (r.kind === 'break') s += "\n";
+			// field runs inside a placeholder's own text are ignored — they'd
+			// recurse back into resolution.
+		}
+		if (s) lines.push(s);
+	}
+	return lines.join("\n");
 }
 
 // Collect non-placeholder shapes from a layout or master — static decoration
@@ -616,6 +709,7 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 		rotation60k: frame?.rotation60k ?? 0,
 		flipH: frame?.flipH ?? false,
 		flipV: frame?.flipV ?? false,
+		phType,
 	};
 }
 

@@ -1,9 +1,9 @@
 import type { Shape } from '../presentation-parser';
 import { emuToPx, positionStyle, SVG_NS } from './geom';
-import { renderParagraph, type AutoNumState } from './text';
+import { renderParagraph, type AutoNumState, type FieldContext } from './text';
 import { solidColorFromFill } from './fill-utils';
 
-export function renderShape(shape: Shape, cls: string): HTMLElement {
+export function renderShape(shape: Shape, cls: string, fieldCtx?: FieldContext): HTMLElement {
 	const el = document.createElement("div");
 	el.className = `${cls}-shape`;
 	Object.assign(el.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
@@ -33,7 +33,7 @@ export function renderShape(shape: Shape, cls: string): HTMLElement {
 	}
 	const autoNumState: AutoNumState = new Map();
 	for (const p of shape.paragraphs) {
-		el.appendChild(renderParagraph(p, autoNumState));
+		el.appendChild(renderParagraph(p, autoNumState, fieldCtx));
 	}
 	return el;
 }

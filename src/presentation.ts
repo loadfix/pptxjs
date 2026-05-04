@@ -10,8 +10,10 @@ import {
 	emptyPlaceholderMap,
 	emptyMasterTextStyles,
 	parseMasterTextStyles,
+	extractHfPlaceholderText,
 	PlaceholderMap,
 	MasterTextStyles,
+	ShapeLike,
 } from './presentation-parser';
 import {
 	ThemeColors,
@@ -46,6 +48,9 @@ interface LayoutBundle {
 export class Presentation {
 	slides: Slide[] = [];
 	slideSize: SlideSize = { cx: 9144000, cy: 6858000 };
+	// <p:presentation firstSlideNum="N"> — the 1-based index to display for
+	// the first slide. Defaults to 1 when absent.
+	firstSlideNum: number = 1;
 
 	static async load(data: Blob | any, _parser: unknown, options: Options): Promise<Presentation> {
 		const pkg = await OpenXmlPackage.load(data, { trimXmlDeclaration: options.trimXmlDeclaration });
@@ -54,6 +59,13 @@ export class Presentation {
 		const presPath = "ppt/presentation.xml";
 		const presDoc = await pkg.loadXml(presPath);
 		if (!presDoc) return pres;
+
+		const presRoot = presDoc.documentElement;
+		const firstSlideNumAttr = presRoot.getAttribute("firstSlideNum");
+		if (firstSlideNumAttr) {
+			const n = Number(firstSlideNumAttr);
+			if (Number.isFinite(n) && n > 0) pres.firstSlideNum = n;
+		}
 
 		const sldSzEl = presDoc.getElementsByTagNameNS(A_NS.p, "sldSz")[0];
 		if (sldSzEl) {
@@ -67,6 +79,10 @@ export class Presentation {
 		const sldIdEls = Array.from(presDoc.getElementsByTagNameNS(A_NS.p, "sldId"));
 		const slidePaths: string[] = [];
 		for (const el of sldIdEls) {
+			// Hidden slide filter: <p:sldId show="0"> is hidden. Per the schema,
+			// a missing `show` attr is visible (true). Opt-in override via
+			// `showHidden: true` includes them anyway.
+			if (!options.showHidden && el.getAttribute("show") === "0") continue;
 			const rid = el.getAttributeNS(A_NS.r, "id");
 			if (!rid) continue;
 			const rel = rels.get(rid);
@@ -220,6 +236,18 @@ export class Presentation {
 
 			const slideEmbeds = await embedsFor(path);
 			const slide = parseSlide(doc, i, { ...baseCtx, embedUrls: slideEmbeds });
+
+			// Footer/header/datetime text cascade: slide → layout. If the slide
+			// doesn't carry the text in its own placeholder, pull it from the
+			// layout's corresponding placeholder. Layout placeholders are parsed
+			// as part of `staticShapes`.
+			if (slide.footerText === null || slide.headerText === null || slide.datetimeText === null) {
+				const layoutHfText = extractHfPlaceholderText(staticShapes as ShapeLike[]);
+				if (slide.footerText === null) slide.footerText = layoutHfText.ftr;
+				if (slide.headerText === null) slide.headerText = layoutHfText.hdr;
+				if (slide.datetimeText === null) slide.datetimeText = layoutHfText.dt;
+			}
+
 			// Prepend static chrome so slide content renders on top.
 			slide.shapes = [...staticShapes, ...slide.shapes];
 

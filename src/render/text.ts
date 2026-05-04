@@ -1,10 +1,20 @@
-import type { Paragraph, Run, TextRun } from '../presentation-parser';
+import type { Paragraph, Run, TextRun, Slide } from '../presentation-parser';
 
 // Counters for auto-numbered bullets within the current shape, keyed by
 // paragraph level. Reset at each new shape.
 export type AutoNumState = Map<number, number>;
 
-export function renderParagraph(p: Paragraph, autoNumState: AutoNumState): HTMLElement {
+// Resolution context for field substitution (slidenum, datetime, ftr, hdr).
+// The renderer threads one of these through paragraph/run rendering so runs
+// of kind `field` can be replaced with the current slide's values.
+export interface FieldContext {
+	slide: Slide;
+	// Presentation-level 1-based starting slide number from
+	// <p:presentation firstSlideNum="N">; combines with slide.index.
+	firstSlideNum: number;
+}
+
+export function renderParagraph(p: Paragraph, autoNumState: AutoNumState, fieldCtx?: FieldContext): HTMLElement {
 	const el = document.createElement("p");
 	el.style.margin = "0";
 	if (p.level > 0) el.style.marginLeft = `${p.level * 24}px`;
@@ -33,7 +43,7 @@ export function renderParagraph(p: Paragraph, autoNumState: AutoNumState): HTMLE
 	}
 
 	for (const run of p.runs) {
-		el.appendChild(renderRun(run));
+		el.appendChild(renderRun(run, fieldCtx));
 	}
 	return el;
 }
@@ -80,14 +90,16 @@ export function toRoman(n: number): string {
 	return out || "I";
 }
 
-export function renderRun(run: Run): HTMLElement {
+export function renderRun(run: Run, fieldCtx?: FieldContext): HTMLElement {
 	// Wave 2 — render BreakRun as <br>, FieldRun via field substitution.
 	if (run.kind === 'break') {
 		return document.createElement("br");
 	}
 	if (run.kind === 'field') {
 		const el = document.createElement("span");
-		el.textContent = run.fallbackText;
+		const resolved = resolveField(run.fieldType, run.fallbackText, fieldCtx);
+		el.textContent = resolved;
+		el.setAttribute("data-pptx-field", run.fieldType);
 		applyRunStyle(el, run.style);
 		return el;
 	}
@@ -96,6 +108,62 @@ export function renderRun(run: Run): HTMLElement {
 	el.textContent = run.text;
 	applyRunStyle(el, run.style);
 	return el;
+}
+
+// Resolve a FieldRun's fieldType to actual display text. Falls through to
+// `fallbackText` for unknown/unsupported variants so the slide still shows
+// *something* — PowerPoint usually authors a reasonable literal there.
+export function resolveField(fieldType: string, fallbackText: string, ctx?: FieldContext): string {
+	if (!ctx) return fallbackText;
+	const t = fieldType;
+	if (t === 'slidenum' || t === 'sldNum') {
+		// slide.index is 0-based within the kept (non-hidden) list; combine
+		// with firstSlideNum (1-based) so index=0 → firstSlideNum.
+		return String(ctx.slide.index + ctx.firstSlideNum);
+	}
+	if (t === 'ftr') {
+		if (!ctx.slide.hf.ftr) return "";
+		return ctx.slide.footerText ?? fallbackText;
+	}
+	if (t === 'hdr') {
+		return ctx.slide.headerText ?? fallbackText;
+	}
+	if (t === 'datetime' || t === 'datetimeFigureOut' || /^datetime(\d+)?$/.test(t)) {
+		return formatDatetimeField(t, fallbackText);
+	}
+	return fallbackText;
+}
+
+// Minimal mapping from OOXML `datetimeN` variants to locale-friendly output.
+// We render using the browser's current locale; an authoritative format-code
+// translator would be far larger than the prompt warrants. Unrecognised
+// variants fall through to fallbackText.
+export function formatDatetimeField(variant: string, fallbackText: string): string {
+	const now = new Date();
+	switch (variant) {
+		case 'datetime':
+		case 'datetime1':
+			// "M/D/YYYY" style — the default short-date locale rendering.
+			return now.toLocaleDateString();
+		case 'datetime2':
+			// Long date, e.g. "Monday, May 02, 2026".
+			return now.toLocaleDateString(undefined, {
+				weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+			});
+		case 'datetime3':
+			// Abbreviated e.g. "02 May 2026".
+			return now.toLocaleDateString(undefined, {
+				day: '2-digit', month: 'short', year: 'numeric',
+			});
+		case 'datetime12':
+		case 'datetime13':
+			// Time-of-day variants.
+			return now.toLocaleTimeString();
+		case 'datetimeFigureOut':
+			return now.toLocaleString();
+		default:
+			return fallbackText;
+	}
 }
 
 function applyRunStyle(el: HTMLElement, s: TextRun['style']): void {

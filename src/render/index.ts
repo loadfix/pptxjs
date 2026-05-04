@@ -18,8 +18,10 @@ export class HtmlRenderer {
 			section.className = `${options.className}-slide`;
 			section.dataset.slideIndex = String(slide.index);
 			applyBackground(section, slide);
+			const fieldCtx = { slide, firstSlideNum: presentation.firstSlideNum };
 			for (const shape of slide.shapes) {
-				section.appendChild(renderShapeLike(shape, options.className));
+				const node = renderShapeLike(shape, options.className, fieldCtx);
+				if (node) section.appendChild(node);
 			}
 			out.push(section);
 		}
