@@ -1,9 +1,157 @@
-import type { TableShape, TableCell } from '../presentation-parser';
+import type { TableShape, TableCell, TableCellBorders } from '../presentation-parser';
+import type { TableStyle, TableBandStyle, TableBorders } from '../table-style';
+import type { LineStyle, Fill } from '../fill';
 import { emuToPx, positionStyle, transformStyle } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
-import { fillToCssBackground } from './fill-utils';
+import { solidColorFromFill } from './fill-utils';
 
-export function renderTable(t: TableShape, cls: string): HTMLElement {
+// DrawingML <a:prstDash> values → CSS border-style. "solid" is the default
+// when no dash is specified on the line.
+function dashToCss(dash: LineStyle['dash']): string {
+	switch (dash) {
+		case 'dash':
+		case 'lgDash':
+		case 'sysDash':
+			return 'dashed';
+		case 'dot':
+		case 'sysDot':
+			return 'dotted';
+		case 'dashDot':
+		case 'lgDashDot':
+		case 'sysDashDot':
+			return 'dashed';
+		case 'solid':
+		case null:
+		case undefined:
+		default:
+			return 'solid';
+	}
+}
+
+// Build a CSS `border` shorthand from a LineStyle. Returns null when the
+// line resolves to a no-op (noFill or unresolvable colour).
+function borderCss(line: LineStyle | null): string | null {
+	if (!line) return null;
+	// A NoFill <a:ln> collapses to widthEmu=0 at parse time — signal "no border".
+	if (line.widthEmu === 0) return 'none';
+	const color = solidColorFromFill(line.fill ?? null);
+	if (!color) return null;
+	const widthPx = line.widthEmu != null ? Math.max(emuToPx(line.widthEmu), 0.5) : 1;
+	return `${widthPx}px ${dashToCss(line.dash)} ${color}`;
+}
+
+// Merge band b into a. Later arguments win (used for the cascade).
+function mergeBand(a: TableBandStyle, b: TableBandStyle): TableBandStyle {
+	return {
+		borders: {
+			l: b.borders.l ?? a.borders.l,
+			r: b.borders.r ?? a.borders.r,
+			t: b.borders.t ?? a.borders.t,
+			b: b.borders.b ?? a.borders.b,
+			insideH: b.borders.insideH ?? a.borders.insideH,
+			insideV: b.borders.insideV ?? a.borders.insideV,
+			tlbr: b.borders.tlbr ?? a.borders.tlbr,
+			blTr: b.borders.blTr ?? a.borders.blTr,
+		},
+		fill: b.fill ?? a.fill,
+		textColorHex: b.textColorHex ?? a.textColorHex,
+	};
+}
+
+function emptyBandInline(): TableBandStyle {
+	return {
+		borders: { l: null, r: null, t: null, b: null, insideH: null, insideV: null, tlbr: null, blTr: null },
+		fill: null,
+		textColorHex: null,
+	};
+}
+
+// Derive the effective band style for a specific cell. Cascades:
+//   wholeTbl → row banding (band1H/band2H for inner rows; firstRow/lastRow
+//   override the banding on the edges) → column banding (band1V/band2V,
+//   firstCol/lastCol) → corner cells (nwCell/etc — TODO).
+function resolveBandForCell(
+	style: TableStyle,
+	flags: TableShape['tableFlags'],
+	rowIndex: number,
+	rowCount: number,
+	colIndex: number,
+	colCount: number,
+): TableBandStyle {
+	let out = emptyBandInline();
+	out = mergeBand(out, style.wholeTbl);
+
+	// Row banding. When firstRow is on and this is row 0, skip the band
+	// colouring for that row and let firstRow win instead. Similarly for
+	// lastRow.
+	const isFirstRow = flags.firstRow && rowIndex === 0;
+	const isLastRow = flags.lastRow && rowIndex === rowCount - 1;
+	if (flags.bandRow && !isFirstRow && !isLastRow) {
+		// PowerPoint: band1H covers rows 1,3,5,... when firstRow is present
+		// (index 0 is the header), or 0,2,4,... when it isn't.
+		const offset = flags.firstRow ? 1 : 0;
+		const banded = (rowIndex - offset);
+		if (banded >= 0) {
+			out = mergeBand(out, banded % 2 === 0 ? style.band1H : style.band2H);
+		}
+	}
+	if (isFirstRow) out = mergeBand(out, style.firstRow);
+	if (isLastRow) out = mergeBand(out, style.lastRow);
+
+	// Column banding — TODO: left as-is until we need it. The data is
+	// captured; just never applied for now.
+	void style.band1V; void style.band2V;
+	const isFirstCol = flags.firstCol && colIndex === 0;
+	const isLastCol = flags.lastCol && colIndex === colCount - 1;
+	if (isFirstCol) out = mergeBand(out, style.firstCol);
+	if (isLastCol) out = mergeBand(out, style.lastCol);
+
+	return out;
+}
+
+// Convert an EMU inset 4-tuple to a CSS padding shorthand.
+function insetsToPadding(i: { l: number; r: number; t: number; b: number } | null): string {
+	if (!i) {
+		// PowerPoint defaults: 0.1" left/right, 0.05" top/bottom.
+		return `${emuToPx(45720)}px ${emuToPx(91440)}px`;
+	}
+	return `${emuToPx(i.t)}px ${emuToPx(i.r)}px ${emuToPx(i.b)}px ${emuToPx(i.l)}px`;
+}
+
+function anchorToVAlign(a: 't' | 'ctr' | 'b' | null): string {
+	if (a === 'ctr') return 'middle';
+	if (a === 'b') return 'bottom';
+	return 'top';
+}
+
+function fillToBackground(fill: Fill | null): string | null {
+	if (!fill) return null;
+	if (fill.kind === 'solid') return fill.colorHex;
+	if (fill.kind === 'none') return 'transparent';
+	// Gradient/pattern/blip fills in cells — TODO, render as no background.
+	return null;
+}
+
+// Determine the border-on-a-side value for a cell, given:
+//   - the cell's own per-side border (wins when present),
+//   - the band's per-side border for the outer edge,
+//   - the band's insideH/insideV for interior edges.
+function resolveSideBorder(
+	cellSide: LineStyle | null,
+	bandOuterSide: LineStyle | null,
+	bandInsideSide: LineStyle | null,
+	isOuter: boolean,
+): LineStyle | null {
+	if (cellSide) return cellSide;
+	if (isOuter) return bandOuterSide ?? bandInsideSide;
+	return bandInsideSide ?? bandOuterSide;
+}
+
+export function renderTable(
+	t: TableShape,
+	cls: string,
+	tableStyles: Map<string, TableStyle> | null,
+): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-table`;
 	Object.assign(wrap.style, positionStyle(t.x, t.y, t.cx, t.cy));
@@ -27,14 +175,26 @@ export function renderTable(t: TableShape, cls: string): HTMLElement {
 		table.appendChild(colgroup);
 	}
 
-	for (const row of t.rows) {
+	// Look up the style. styleId might point at an entry that isn't in
+	// the map (default theme styles like {5C22544A-...} usually aren't
+	// instantiated in tableStyles.xml) — fall back to null (no cascade).
+	const style = t.styleId && tableStyles ? tableStyles.get(t.styleId) ?? null : null;
+
+	const rowCount = t.rows.length;
+	const colCount = t.colWidthsEmu.length || (t.rows[0]?.cells.length ?? 0);
+
+	for (let rowIndex = 0; rowIndex < t.rows.length; rowIndex++) {
+		const row = t.rows[rowIndex];
 		const tr = document.createElement("tr");
 		if (row.heightEmu) tr.style.height = `${emuToPx(row.heightEmu)}px`;
+		let colIndex = 0;
 		for (const cell of row.cells) {
-			// Continuation cells of a span are suppressed; the primary cell
-			// renders with the appropriate colSpan/rowSpan.
-			if (cell.hMerge || cell.vMerge) continue;
-			tr.appendChild(renderCell(cell));
+			if (cell.hMerge || cell.vMerge) { colIndex++; continue; }
+			const band = style
+				? resolveBandForCell(style, t.tableFlags, rowIndex, rowCount, colIndex, colCount)
+				: null;
+			tr.appendChild(renderCell(cell, band, rowIndex, rowCount, colIndex, colCount));
+			colIndex += cell.gridSpan || 1;
 		}
 		table.appendChild(tr);
 	}
@@ -43,17 +203,58 @@ export function renderTable(t: TableShape, cls: string): HTMLElement {
 	return wrap;
 }
 
-export function renderCell(cell: TableCell): HTMLTableCellElement {
+export function renderCell(
+	cell: TableCell,
+	band: TableBandStyle | null,
+	rowIndex: number,
+	rowCount: number,
+	colIndex: number,
+	colCount: number,
+): HTMLTableCellElement {
 	const td = document.createElement("td");
-	td.style.border = "1px solid #ccc";
-	td.style.padding = "4px";
-	td.style.verticalAlign = "top";
-	// Cell fills are currently typed as SolidFill only; route through
-	// fillToCssBackground for consistency with shape rendering.
-	const bg = fillToCssBackground(cell.fill, new Map());
-	if (bg) td.style.background = bg;
+
+	// Padding — per-cell <a:tcPr marL/R/T/B> wins; else PowerPoint defaults.
+	td.style.padding = insetsToPadding(cell.insetsEmu);
+	// Vertical alignment — from <a:tcPr anchor="...">. Defaults to top.
+	td.style.verticalAlign = anchorToVAlign(cell.anchor);
+
+	// Background — cell fill wins; then band fill; else transparent.
+	const cellBg = fillToBackground(cell.fill);
+	if (cellBg) {
+		td.style.background = cellBg;
+	} else if (band) {
+		const bandBg = fillToBackground(band.fill);
+		if (bandBg) td.style.background = bandBg;
+	}
+
+	// Text colour — band's tcTxStyle applies if the cell didn't set its own.
+	if (band?.textColorHex) td.style.color = band.textColorHex;
+
+	// Per-side borders.
+	const bandBorders: TableBorders | null = band ? band.borders : null;
+	const cellBorders: TableCellBorders = cell.borders;
+	const isOuterT = rowIndex === 0;
+	const isOuterB = rowIndex === rowCount - 1;
+	const isOuterL = colIndex === 0;
+	const isOuterR = colIndex === colCount - 1;
+
+	const sideT = resolveSideBorder(cellBorders.t, bandBorders?.t ?? null, bandBorders?.insideH ?? null, isOuterT);
+	const sideB = resolveSideBorder(cellBorders.b, bandBorders?.b ?? null, bandBorders?.insideH ?? null, isOuterB);
+	const sideL = resolveSideBorder(cellBorders.l, bandBorders?.l ?? null, bandBorders?.insideV ?? null, isOuterL);
+	const sideR = resolveSideBorder(cellBorders.r, bandBorders?.r ?? null, bandBorders?.insideV ?? null, isOuterR);
+
+	const bT = borderCss(sideT);
+	const bB = borderCss(sideB);
+	const bL = borderCss(sideL);
+	const bR = borderCss(sideR);
+	if (bT) td.style.borderTop = bT;
+	if (bB) td.style.borderBottom = bB;
+	if (bL) td.style.borderLeft = bL;
+	if (bR) td.style.borderRight = bR;
+
 	if (cell.gridSpan > 1) td.colSpan = cell.gridSpan;
 	if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
+
 	const autoNumState: AutoNumState = new Map();
 	for (const p of cell.paragraphs) {
 		td.appendChild(renderParagraph(p, autoNumState));

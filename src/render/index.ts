@@ -20,7 +20,7 @@ export class HtmlRenderer {
 			section.dataset.slideIndex = String(slide.index);
 			applyBackground(section, slide);
 			for (const shape of slide.shapes) {
-				section.appendChild(renderShapeLike(shape, options.className, embedUrls));
+				section.appendChild(renderShapeLike(shape, options.className, embedUrls, presentation.tableStyles));
 			}
 			out.push(section);
 		}

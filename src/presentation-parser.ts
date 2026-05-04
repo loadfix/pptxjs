@@ -68,6 +68,20 @@ function hyperlinkFromCNvPr(nvSpPrLike: Element | null): string | null {
 	return hlinkClick.getAttributeNS(A_NS.r, "id") || null;
 }
 
+// Mirrors <a:tblPr> boolean flags that toggle band application.
+export interface TableFlags {
+	firstRow: boolean;
+	firstCol: boolean;
+	lastRow: boolean;
+	lastCol: boolean;
+	bandRow: boolean;
+	bandCol: boolean;
+}
+
+export function emptyTableFlags(): TableFlags {
+	return { firstRow: false, firstCol: false, lastRow: false, lastCol: false, bandRow: false, bandCol: false };
+}
+
 export interface TableShape {
 	kind: 'table';
 	x: number;
@@ -76,6 +90,10 @@ export interface TableShape {
 	cy: number;
 	colWidthsEmu: number[];
 	rows: TableRow[];
+	// The UUID reference into ppt/tableStyles.xml. Null when <a:tableStyleId>
+	// wasn't present. The renderer looks this up in the shared styles map.
+	styleId: string | null;
+	tableFlags: TableFlags;
 	// Shared shape metadata.
 	name: string | null;
 	title: string | null;
@@ -90,9 +108,22 @@ export interface TableRow {
 	cells: TableCell[];
 }
 
+// Per-side borders carried by <a:tcPr>. Each LineStyle is the direct
+// result of parseLine on the corresponding <a:lnL|lnR|lnT|lnB|...>.
+export interface TableCellBorders {
+	l: LineStyle | null;
+	r: LineStyle | null;
+	t: LineStyle | null;
+	b: LineStyle | null;
+	tlbr: LineStyle | null;
+	blTr: LineStyle | null;
+}
+
 export interface TableCell {
 	paragraphs: Paragraph[];
-	fill: SolidFill | null;
+	// Any fill kind from <a:tcPr> (not just solid). Null when the cell
+	// defers to the table-style band.
+	fill: Fill | null;
 	// Column span > 1 (from `gridSpan`); merged continuation cells (`hMerge`) are
 	// dropped during parse. Similarly `rowSpan` / `vMerge` handling is minimal.
 	gridSpan: number;
@@ -100,6 +131,13 @@ export interface TableCell {
 	// Continuation cells that the renderer should skip.
 	hMerge: boolean;
 	vMerge: boolean;
+	// Per-side padding (marL/marR/marT/marB) in EMU. Null means inherit
+	// defaults (the renderer applies ~3.6pt = ~91440 EMU, matching
+	// PowerPoint's default).
+	insetsEmu: { l: number; r: number; t: number; b: number } | null;
+	// <a:tcPr anchor="t|ctr|b"> — vertical text alignment inside the cell.
+	anchor: 't' | 'ctr' | 'b' | null;
+	borders: TableCellBorders;
 }
 
 export interface Shape {
@@ -502,6 +540,25 @@ function parseGraphicFrame(gf: Element, ctx: SlideParseContext): TableShape | nu
 		}
 	}
 
+	// Table-level properties: boolean flags that toggle band application,
+	// and the styleId UUID pointing into ppt/tableStyles.xml.
+	const tblPr = firstChildNS(tbl, A_NS.a, "tblPr");
+	const tableFlags = emptyTableFlags();
+	let styleId: string | null = null;
+	if (tblPr) {
+		tableFlags.firstRow = tblPr.getAttribute("firstRow") === "1";
+		tableFlags.firstCol = tblPr.getAttribute("firstCol") === "1";
+		tableFlags.lastRow = tblPr.getAttribute("lastRow") === "1";
+		tableFlags.lastCol = tblPr.getAttribute("lastCol") === "1";
+		tableFlags.bandRow = tblPr.getAttribute("bandRow") === "1";
+		tableFlags.bandCol = tblPr.getAttribute("bandCol") === "1";
+		const styleIdEl = firstChildNS(tblPr, A_NS.a, "tableStyleId");
+		if (styleIdEl) {
+			const txt = styleIdEl.textContent?.trim();
+			if (txt) styleId = txt;
+		}
+	}
+
 	const rows: TableRow[] = [];
 	for (const trEl of childrenNS(tbl, A_NS.a, "tr")) {
 		rows.push(parseTableRow(trEl, ctx));
@@ -515,6 +572,8 @@ function parseGraphicFrame(gf: Element, ctx: SlideParseContext): TableShape | nu
 		x, y, cx, cy,
 		colWidthsEmu,
 		rows,
+		styleId,
+		tableFlags,
 		name: nv.name,
 		title: nv.title,
 		alt: nv.descr,
@@ -540,7 +599,53 @@ function parseTableCell(tc: Element, ctx: SlideParseContext): TableCell {
 	const vMerge = tc.getAttribute("vMerge") === "1";
 
 	const tcPr = firstChildNS(tc, A_NS.a, "tcPr");
-	const fill = parseSolidFill(tcPr ? firstChildNS(tcPr, A_NS.a, "solidFill") : null, ctx.clrMap, ctx.theme);
+
+	// Fill: honour any <a:fill>-kind child of <a:tcPr>, not just solidFill.
+	let fill: Fill | null = null;
+	if (tcPr) {
+		for (const child of Array.from(tcPr.children)) {
+			if (child.namespaceURI !== A_NS.a) continue;
+			const ln = child.localName;
+			if (
+				ln === 'solidFill' || ln === 'noFill' || ln === 'gradFill'
+				|| ln === 'blipFill' || ln === 'pattFill'
+			) {
+				fill = parseFillElement(child, ctx.clrMap, ctx.theme);
+				break;
+			}
+		}
+	}
+
+	// Cell insets (marL/marR/marT/marB on <a:tcPr>) and anchor.
+	let insetsEmu: { l: number; r: number; t: number; b: number } | null = null;
+	let anchor: 't' | 'ctr' | 'b' | null = null;
+	if (tcPr) {
+		const marL = tcPr.getAttribute("marL");
+		const marR = tcPr.getAttribute("marR");
+		const marT = tcPr.getAttribute("marT");
+		const marB = tcPr.getAttribute("marB");
+		if (marL != null || marR != null || marT != null || marB != null) {
+			insetsEmu = {
+				l: marL != null ? Number(marL) || 0 : 91440,
+				r: marR != null ? Number(marR) || 0 : 91440,
+				t: marT != null ? Number(marT) || 0 : 45720,
+				b: marB != null ? Number(marB) || 0 : 45720,
+			};
+		}
+		const anch = tcPr.getAttribute("anchor");
+		if (anch === 't' || anch === 'ctr' || anch === 'b') anchor = anch;
+	}
+
+	// Per-side borders: <a:lnL>, <a:lnR>, <a:lnT>, <a:lnB>, plus
+	// <a:lnTlToBr>, <a:lnBlToTr> for diagonals. Each is a full <a:ln>.
+	const borders: TableCellBorders = {
+		l: parseLine(tcPr ? firstChildNS(tcPr, A_NS.a, "lnL") : null, ctx.clrMap, ctx.theme),
+		r: parseLine(tcPr ? firstChildNS(tcPr, A_NS.a, "lnR") : null, ctx.clrMap, ctx.theme),
+		t: parseLine(tcPr ? firstChildNS(tcPr, A_NS.a, "lnT") : null, ctx.clrMap, ctx.theme),
+		b: parseLine(tcPr ? firstChildNS(tcPr, A_NS.a, "lnB") : null, ctx.clrMap, ctx.theme),
+		tlbr: parseLine(tcPr ? firstChildNS(tcPr, A_NS.a, "lnTlToBr") : null, ctx.clrMap, ctx.theme),
+		blTr: parseLine(tcPr ? firstChildNS(tcPr, A_NS.a, "lnBlToTr") : null, ctx.clrMap, ctx.theme),
+	};
 
 	const txBody = firstChildNS(tc, A_NS.a, "txBody");
 	const paragraphs: Paragraph[] = [];
@@ -553,7 +658,7 @@ function parseTableCell(tc: Element, ctx: SlideParseContext): TableCell {
 		}
 	}
 
-	return { paragraphs, fill, gridSpan, rowSpan, hMerge, vMerge };
+	return { paragraphs, fill, gridSpan, rowSpan, hMerge, vMerge, insetsEmu, anchor, borders };
 }
 
 function parsePic(pic: Element, ctx: SlideParseContext): PicShape | null {
