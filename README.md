@@ -2,7 +2,7 @@
 
 PPTX rendering library.
 
-This repository is a fork of [pptxjs](https://github.com/meshesha/PPTXjs) by Meshesha. It builds on their original work with a from-scratch TypeScript reimplementation that shares the project's name and goal — rendering PPTX presentations in the browser — but follows the architecture of the sibling [docxjs](https://github.com/loadfix/docxjs) fork (TypeScript + rollup + karma, JSZip for package I/O). Credit for the foundational library and the PPTXjs name goes to the original author.
+A browser-side PPTX → HTML renderer, written from scratch in TypeScript and following the architecture of the sibling [docxjs](https://github.com/loadfix/docxjs) library (TypeScript + rollup + karma, JSZip for package I/O). Not affiliated with other libraries that share the pptxjs name.
 
 ## Goal
 
@@ -60,7 +60,7 @@ Early scaffolding. The public surface (`renderAsync`, `parseAsync`, `renderPrese
 
 ## Contributing
 
-This fork commits `dist/` alongside source changes so consumers can pull from git directly. If you open a PR, rebuild `dist/` (via `npm run build`) before committing so the bundled output stays in sync with `src/`. Run `npm run e2e` (Karma + Chrome) for the browser test suite.
+This project commits `dist/` alongside source changes so consumers can pull from git directly. If you open a PR, rebuild `dist/` (via `npm run build`) before committing so the bundled output stays in sync with `src/`. Run `npm run e2e` (Karma + Chrome) for the browser test suite.
 
 ## Related projects
 
