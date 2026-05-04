@@ -9,6 +9,7 @@ import {
 	fillToCssBackground,
 	fillToSvgPaint,
 	applyCropOverlay,
+	applyTileMetrics,
 	lineDashToCss,
 	svgDashArray,
 	createInlineFilter,
@@ -212,12 +213,17 @@ function applyBoxFill(el: HTMLElement, shape: Shape, embedUrls: Map<string, stri
 			// sub-rectangle; the overlay wrapper is overflow:hidden and the
 			// <img> is positioned/scaled to expose only the visible crop.
 			if (bg.tile) {
-				// TODO: tile mode still uses background-repeat (same caveat
-				// as before — srcRect can't be honoured for tiling in CSS).
+				// Tile mode — srcRect still can't be honoured under
+				// background-repeat (CSS gives no way to crop the tile
+				// source), but tx/ty/sx/sy/algn go through applyTileMetrics
+				// once the image's natural dimensions are known.
 				el.style.backgroundImage = `url("${bg.src.replace(/"/g, '\\"')}")`;
 				el.style.backgroundRepeat = 'repeat';
 				el.style.backgroundPosition = 'top left';
 				el.style.backgroundSize = 'auto';
+				if (bg.tileInfo) {
+					applyTileMetrics(el, bg.src, bg.tileInfo);
+				}
 			} else {
 				if (!el.style.position) el.style.position = 'absolute';
 				applyCropOverlay(el, bg.src, bg.srcRectPermille);
