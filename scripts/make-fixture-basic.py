@@ -375,6 +375,36 @@ for r, row in enumerate(data, start=1):
     for c, val in enumerate(row):
         tbl.cell(r, c).text = val
 
+# Second table on its own slide: exercises diagonal cell borders on merged
+# cells (Wave 6 A4). 2 rows x 3 cols; the top-left cell spans 2 columns and
+# carries an <a:lnTlToBr> diagonal. The fixture's purpose is to verify that
+# the SVG overlay stretches across the full merged rect via
+# preserveAspectRatio="none" on the <td colspan=2>.
+merged_diag_slide = prs.slides.add_slide(prs.slide_layouts[5])
+merged_diag_slide.shapes.title.text = "Merged-cell diagonals"
+md_rows, md_cols = 2, 3
+md_tbl = merged_diag_slide.shapes.add_table(
+    md_rows, md_cols, Inches(1), Inches(2), Inches(8), Inches(3)
+).table
+md_tbl.cell(0, 0).text = "spans 2 cols + diagonal"
+md_tbl.cell(0, 2).text = "right"
+md_tbl.cell(1, 0).text = "a"
+md_tbl.cell(1, 1).text = "b"
+md_tbl.cell(1, 2).text = "c"
+# Merge the top-left two cells horizontally.
+md_tbl.cell(0, 0).merge(md_tbl.cell(0, 1))
+# Inject <a:lnTlToBr> into the spanning <a:tc>'s <a:tcPr>.
+md_spanning_tc = md_tbl.cell(0, 0)._tc
+md_tcPr = md_spanning_tc.find(qn("a:tcPr"))
+if md_tcPr is None:
+    md_tcPr = etree.SubElement(md_spanning_tc, qn("a:tcPr"))
+md_tcPr.append(etree.fromstring(
+    "<a:lnTlToBr xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='38100'>"
+    "<a:solidFill><a:srgbClr val='C0392B'/></a:solidFill>"
+    "</a:lnTlToBr>"
+))
+
 # Slide with a gradient-filled shape to exercise GradientFill render path.
 gradient_slide = prs.slides.add_slide(prs.slide_layouts[5])
 gradient_slide.shapes.title.text = "Gradient fill"
