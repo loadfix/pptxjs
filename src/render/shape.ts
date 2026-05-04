@@ -1,9 +1,9 @@
 import type { Shape } from '../presentation-parser';
 import { emuToPx, positionStyle, SVG_NS } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
-import { solidColorFromFill } from './fill-utils';
+import { solidColorFromFill, fillToCssBackground } from './fill-utils';
 
-export function renderShape(shape: Shape, cls: string): HTMLElement {
+export function renderShape(shape: Shape, cls: string, embedUrls: Map<string, string>): HTMLElement {
 	const el = document.createElement("div");
 	el.className = `${cls}-shape`;
 	Object.assign(el.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
@@ -15,8 +15,10 @@ export function renderShape(shape: Shape, cls: string): HTMLElement {
 	if (shape.custGeom && !isDegenerateLine) {
 		el.appendChild(renderCustGeomSvg(shape));
 	} else {
-		if (shape.fill?.kind === 'solid') el.style.background = shape.fill.colorHex;
-		// Wave 2 — render non-solid line fills (gradient/blip/pattern) properly.
+		const bg = fillToCssBackground(shape.fill, embedUrls);
+		if (bg) el.style.background = bg;
+		// TODO: support gradient / blip / pattern line fills; currently only
+		// the solid color path is honoured for strokes.
 		const lineColor = solidColorFromFill(shape.line?.fill ?? null);
 		if (shape.line && lineColor) {
 			const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;

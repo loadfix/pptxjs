@@ -13,13 +13,14 @@ export class HtmlRenderer {
 		const slideH = emuToPx(presentation.slideSize.cy);
 		out.push(makeStyleNode(options.className, slideW, slideH));
 
+		const embedUrls = presentation.embedUrls;
 		for (const slide of presentation.slides) {
 			const section = document.createElement("section");
 			section.className = `${options.className}-slide`;
 			section.dataset.slideIndex = String(slide.index);
 			applyBackground(section, slide);
 			for (const shape of slide.shapes) {
-				section.appendChild(renderShapeLike(shape, options.className));
+				section.appendChild(renderShapeLike(shape, options.className, embedUrls));
 			}
 			out.push(section);
 		}
