@@ -2,6 +2,10 @@ import { Presentation } from './presentation';
 import { PresentationParser } from './presentation-parser';
 import { HtmlRenderer } from './render';
 
+// Re-export the structural metadata types so downstream consumers can type
+// their own section/ToC UI without reaching into the parser module.
+export type { Section, SlideSize } from './presentation-parser';
+
 export interface Options {
 	className: string;
 	inWrapper: boolean;

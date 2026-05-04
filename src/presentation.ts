@@ -7,6 +7,7 @@ import {
 	parseShapesFromSpTree,
 	Slide,
 	SlideSize,
+	Section,
 	ShapeLike,
 	buildPlaceholderMap,
 	emptyPlaceholderMap,
@@ -46,6 +47,14 @@ const IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/re
 const HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 const SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
 
+// PresentationML 2010 extensions namespace. Sections (<p14:sectionLst>) are
+// PowerPoint 2010+ metadata carried under the standard <p:extLst> extension
+// bag in presentation.xml.
+const P14_NS = "http://schemas.microsoft.com/office/powerpoint/2010/main";
+// <p:ext uri="…"> value that tags the sectionLst extension. Other extensions
+// (e.g. modifyVerifier) live under different URIs in the same extLst.
+const SECTION_LST_EXT_URI = "{521415D9-36F7-43E2-AB2F-B90AF26B5E84}";
+
 // Whitelist of URL schemes that may appear in a rendered <a href>. Everything
 // else — `javascript:`, `data:`, `file:`, `vbscript:`, custom schemes — is
 // dropped on load so a malicious PPTX can't smuggle script execution through
@@ -84,7 +93,7 @@ interface LayoutBundle {
 
 export class Presentation {
 	slides: Slide[] = [];
-	slideSize: SlideSize = { cx: 9144000, cy: 6858000 };
+	slideSize: SlideSize = { cx: 9144000, cy: 6858000, type: null, orient: null };
 	// rId → resolved URL, merged across all parts (slide/layout/master).
 	embedUrls: Map<string, string> = new Map();
 	// Populated once at load time from ppt/tableStyles.xml. Null when the
@@ -93,6 +102,11 @@ export class Presentation {
 	// <p:presentation firstSlideNum="N"> — the 1-based index to display for
 	// the first slide. Defaults to 1 when absent.
 	firstSlideNum: number = 1;
+	// PowerPoint "Sections" grouping (<p14:sectionLst> under <p:extLst>).
+	// Empty when the deck carries no sections — the common case. Hosts can
+	// use this to render a section-aware navigator / ToC. Purely metadata;
+	// renderer doesn't consume it.
+	sections: Section[] = [];
 
 	static async load(data: Blob | any, _parser: unknown, options: Options): Promise<Presentation> {
 		const pkg = await OpenXmlPackage.load(data, { trimXmlDeclaration: options.trimXmlDeclaration });
@@ -116,15 +130,39 @@ export class Presentation {
 
 		const sldSzEl = presDoc.getElementsByTagNameNS(A_NS.p, "sldSz")[0];
 		if (sldSzEl) {
+			const typeAttr = sldSzEl.getAttribute("type");
+			const orientAttr = sldSzEl.getAttribute("orient");
+			// orient is a closed ECMA-376 enum (landscape | portrait); anything
+			// else is treated as "absent" rather than propagating garbage.
+			const orient: 'landscape' | 'portrait' | null =
+				orientAttr === 'landscape' || orientAttr === 'portrait' ? orientAttr : null;
 			pres.slideSize = {
 				cx: Number(sldSzEl.getAttribute("cx")) || pres.slideSize.cx,
 				cy: Number(sldSzEl.getAttribute("cy")) || pres.slideSize.cy,
+				type: typeAttr || null,
+				orient,
 			};
 		}
 
 		const rels = await pkg.loadRelationships(presPath);
-		const sldIdEls = Array.from(presDoc.getElementsByTagNameNS(A_NS.p, "sldId"));
+		// Only direct children of <p:sldIdLst> — there may be other <p:sldId>
+		// elements nested under <p14:sectionLst> (one per section entry) that
+		// use the same local name in the p14 namespace; we don't want those,
+		// but the namespace filter below handles it. Still, scope defensively
+		// to sldIdLst's direct children to avoid any future ambiguity.
+		const sldIdLstEl = presDoc.getElementsByTagNameNS(A_NS.p, "sldIdLst")[0] ?? null;
+		const sldIdEls = sldIdLstEl
+			? Array.from(sldIdLstEl.children).filter(
+				(c) => c.namespaceURI === A_NS.p && c.localName === "sldId",
+			)
+			: [];
 		const slidePaths: string[] = [];
+		// p:sldId/@id (the "slide identifier", e.g. 256) → 0-based index in the
+		// filtered slidePaths / pres.slides array. Used below to resolve the
+		// <p14:sldId id="…"> references inside <p14:section>. Hidden slides
+		// that were skipped for rendering are intentionally absent from this
+		// map so a section that references them gets those entries omitted.
+		const sldIdToIndex = new Map<string, number>();
 		for (const el of sldIdEls) {
 			// Hidden slide filter: <p:sldId show="0"> is hidden. Per the schema,
 			// a missing `show` attr is visible (true). Opt-in override via
@@ -134,8 +172,15 @@ export class Presentation {
 			if (!rid) continue;
 			const rel = rels.get(rid);
 			if (!rel) continue;
+			const sldIdAttr = el.getAttribute("id");
+			if (sldIdAttr) sldIdToIndex.set(sldIdAttr, slidePaths.length);
 			slidePaths.push(resolveRelTarget(presPath, rel.target));
 		}
+
+		// <p14:sectionLst> under <p:extLst>. Each <p14:section> groups a
+		// contiguous run of slides (by sldId reference, not by position) with
+		// a display name. Purely metadata — rendering is unaffected.
+		pres.sections = parseSections(presDoc, sldIdToIndex);
 		// Map each slide's package path → its 0-based index, used to translate
 		// slide-to-slide relationships (Target="../slides/slide3.xml") to the
 		// `#slide-N` anchor fragment the renderer emits on <section>.
@@ -535,6 +580,53 @@ async function resolveGraphicFrameFallbacks(
 		out.push(s);
 	}
 	return out;
+}
+
+// Walk <p:extLst> looking for the sectionLst extension and extract the
+// section records. `sldIdToIndex` maps each p:sldId/@id to its 0-based
+// position in the filtered slide list; sections carrying references to
+// hidden / unknown slides simply get those entries dropped.
+function parseSections(presDoc: Document, sldIdToIndex: Map<string, number>): Section[] {
+	// Direct child search under the root <p:presentation> — extLst can appear
+	// at multiple levels in the XML, but sections live specifically in the
+	// presentation-level one.
+	const root = presDoc.documentElement;
+	const extLst = findChild(root, A_NS.p, "extLst");
+	if (!extLst) return [];
+	const extEls = Array.from(extLst.children).filter(
+		(c) => c.namespaceURI === A_NS.p && c.localName === "ext",
+	);
+	const sectionExt = extEls.find((e) => e.getAttribute("uri") === SECTION_LST_EXT_URI);
+	if (!sectionExt) return [];
+	const sectionLst = findChild(sectionExt, P14_NS, "sectionLst");
+	if (!sectionLst) return [];
+
+	const sections: Section[] = [];
+	for (const sec of Array.from(sectionLst.children)) {
+		if (sec.namespaceURI !== P14_NS || sec.localName !== "section") continue;
+		const id = sec.getAttribute("id") ?? "";
+		const name = sec.getAttribute("name") ?? "";
+		const sldIdLst = findChild(sec, P14_NS, "sldIdLst");
+		const slideIndices: number[] = [];
+		if (sldIdLst) {
+			for (const sid of Array.from(sldIdLst.children)) {
+				if (sid.namespaceURI !== P14_NS || sid.localName !== "sldId") continue;
+				const idAttr = sid.getAttribute("id");
+				if (!idAttr) continue;
+				const idx = sldIdToIndex.get(idAttr);
+				if (idx !== undefined) slideIndices.push(idx);
+			}
+		}
+		sections.push({ id, name, slideIndices });
+	}
+	return sections;
+}
+
+function findChild(parent: Element, ns: string, localName: string): Element | null {
+	for (const c of Array.from(parent.children)) {
+		if (c.namespaceURI === ns && c.localName === localName) return c;
+	}
+	return null;
 }
 
 // Translate a `ppaction://hlinkshowjump?jump=...` URI to a `#slide-N` fragment
