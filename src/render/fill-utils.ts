@@ -3,10 +3,11 @@
 // should use `fillToCssBackground` below.
 
 import type { Fill, GradientFill, BlipFill, PatternFill, LineStyle } from '../fill';
+import { withAlphaHex } from '../color-math';
 
 export function solidColorFromFill(fill: Fill | null): string | null {
 	if (!fill) return null;
-	if (fill.kind === 'solid') return fill.colorHex;
+	if (fill.kind === 'solid') return withAlphaHex(fill.colorHex, fill.alpha);
 	return null;
 }
 
@@ -74,7 +75,7 @@ export function fillToCssBackground(
 	if (!fill) return null;
 	switch (fill.kind) {
 		case 'none': return null;
-		case 'solid': return fill.colorHex;
+		case 'solid': return withAlphaHex(fill.colorHex, fill.alpha);
 		case 'gradient': return gradientToCss(fill);
 		case 'blip': return blipToCss(fill, embedUrls);
 		case 'pattern': return patternToCss(fill);
@@ -88,7 +89,7 @@ function gradientToCss(fill: GradientFill): string | null {
 	const stopStr = stops
 		.map(s => {
 			const pct = Math.max(0, Math.min(100, s.posPermille / 1000));
-			const color = cssColorWithAlpha(s.colorHex, s.alpha);
+			const color = withAlphaHex(s.colorHex, s.alpha);
 			return `${color} ${pct.toFixed(2)}%`;
 		})
 		.join(", ");
@@ -193,14 +194,3 @@ function svgForPatternPreset(preset: string, fg: string, bg: string): string | n
 	return null;
 }
 
-function cssColorWithAlpha(hex: string, alpha: number | null): string {
-	if (alpha == null) return hex;
-	// Alpha in OOXML is in 0..100000 (permille-ish). Clamp + normalise.
-	const a = Math.max(0, Math.min(1, alpha / 100000));
-	const m = /^#?([0-9a-fA-F]{6})$/.exec(hex);
-	if (!m) return hex;
-	const r = parseInt(m[1].slice(0, 2), 16);
-	const g = parseInt(m[1].slice(2, 4), 16);
-	const b = parseInt(m[1].slice(4, 6), 16);
-	return `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
-}

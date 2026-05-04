@@ -5,7 +5,10 @@
 //   <a:shade val="N"/>    darkens toward black.   Lmod = L * (N/100000)
 //   <a:lumMod val="N"/>   multiplies luminance.   Lmod = L * (N/100000)
 //   <a:lumOff val="N"/>   adds to luminance.      Lmod = L + (N/100000)
-//   <a:alpha val="N"/>    opacity (ignored — CSS color can't carry alpha through `color:` without rgba)
+//   <a:alpha val="N"/>    opacity — captured by theme.extractAlpha as a 0..1
+//                         value and threaded through ResolvedColor.alpha so
+//                         renderers can fold it into `#RRGGBBAA` (CSS 8-hex)
+//                         or rgba() output.
 //
 // All adjustments happen in HSL space, operating on the L channel only, and
 // are applied in document order. References: ECMA-376 §20.1.2.3 and the
@@ -100,4 +103,18 @@ function hue2rgb(p: number, q: number, t: number): number {
 
 function toHex(n: number): string {
 	return n.toString(16).padStart(2, "0");
+}
+
+// Compose a CSS color that carries the given alpha (0..1). Input is a
+// `#RRGGBB` hex color (any other form, including an already-alpha'd value,
+// is returned unchanged). Output is `#RRGGBBAA` — CSS Color Level 4 8-hex,
+// which is supported across every major browser and is more compact than
+// `rgba()`. When alpha is null, undefined, or >= 1 the input is returned
+// verbatim so opaque colors don't pick up a spurious suffix.
+export function withAlphaHex(hex: string, alpha: number | null | undefined): string {
+	if (alpha == null || alpha >= 1) return hex;
+	if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return hex;
+	const a = Math.max(0, Math.min(1, alpha));
+	const aByte = Math.round(a * 255);
+	return `${hex}${toHex(aByte)}`;
 }
