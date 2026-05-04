@@ -1,6 +1,29 @@
 # pptxjs — project notes for Claude
 
-Browser-side PPTX → HTML renderer. TypeScript, built with rollup, tested with Karma + jasmine. Follows the same structure as the sibling [docxjs](https://github.com/loadfix/docxjs) project.
+Browser-side PPTX → HTML renderer. TypeScript, built with rollup, tested with Playwright. Follows the same structure as the sibling [docxjs](https://github.com/loadfix/docxjs) project.
+
+## OOXML feature workflow (required before adding rendering for any new feature)
+
+Every OOXML feature is defined by a manifest in the shared corpus
+repository `loadfix/ooxml-reference-corpus` (sibling checkout at
+`../ooxml-reference-corpus/`). pptxjs is a renderer — it reads a fixture
+rather than authoring one — but it must agree with `python-pptx` on what
+the feature's XML looks like.
+
+1. **Read the manifest.** Look under
+   `../ooxml-reference-corpus/features/pptx/` for a JSON manifest
+   covering the feature you're rendering.
+
+2. **Consult the ECMA-376 5th edition spec** (corpus-only):
+   - PDFs: `../ooxml-reference-corpus/spec/ecma-376-5/part-{1,2,3,4}/*.pdf`
+   - RNC schemas (easier to read): `../ooxml-reference-corpus/spec/ecma-376-5/part-1/rnc/`
+   - XSD schemas: `../ooxml-reference-corpus/spec/ecma-376-5/part-1/xsd/`
+
+3. **If no manifest exists**, ask python-pptx's maintainer to author one
+   first — authoring-side libraries own the definition of "done".
+
+4. **Verify rendering.** Add a Playwright render-smoke test loading the
+   committed fixture from the corpus.
 
 ## Workflow
 
