@@ -1,6 +1,7 @@
 import type { PicShape } from '../presentation-parser';
 import { positionStyle, transformStyle } from './geom';
 import { wrapInHyperlink } from './hyperlink';
+import { applyCropOverlay } from './fill-utils';
 
 // Per-mille denominator used throughout OOXML blip-effect attributes
 // (srcRect/alphaModFix/lum/biLevel/tile). 100000 = 100%.
@@ -34,9 +35,10 @@ export function renderPic(pic: PicShape, cls: string, hyperlinkUrls: Map<string,
 	}
 
 	// Stretch (default) path — emit an <img> sized to fill the wrapper,
-	// optionally inside a crop wrapper when <a:srcRect> is present.
-	const img = document.createElement("img");
-	img.src = pic.src;
+	// optionally inside a crop wrapper when <a:srcRect> is present. The
+	// crop math is shared with shape.ts via applyCropOverlay so both
+	// code paths honour <a:srcRect> identically.
+	const img = applyCropOverlay(wrap, pic.src, pic.srcRectPermille);
 	// The DOCX-side render guidance warns against putting document-derived
 	// strings into innerHTML/CSS; `alt`/`title` via setAttribute is safe
 	// (the browser HTML-encodes attribute values).
@@ -46,35 +48,9 @@ export function renderPic(pic: PicShape, cls: string, hyperlinkUrls: Map<string,
 	if (pic.alt) img.setAttribute("alt", pic.alt);
 	if (pic.title) img.setAttribute("title", pic.title);
 
-	if (pic.srcRectPermille) {
-		// Crop via overflow-hidden wrapper + scaled/offset <img>.
-		const { l, t, r, b } = pic.srcRectPermille;
-		const cropWFrac = 1 - (l + r) / PERMILLE;
-		const cropHFrac = 1 - (t + b) / PERMILLE;
-		if (cropWFrac > 0 && cropHFrac > 0) {
-			wrap.style.overflow = "hidden";
-			img.style.position = "absolute";
-			img.style.width = `${100 / cropWFrac}%`;
-			img.style.height = `${100 / cropHFrac}%`;
-			img.style.left = `${-(l / PERMILLE) * (100 / cropWFrac)}%`;
-			img.style.top = `${-(t / PERMILLE) * (100 / cropHFrac)}%`;
-			img.style.maxWidth = "none";
-			img.style.maxHeight = "none";
-		} else {
-			img.style.width = "100%";
-			img.style.height = "100%";
-			img.style.objectFit = "fill";
-		}
-	} else {
-		img.style.width = "100%";
-		img.style.height = "100%";
-		img.style.objectFit = "fill";
-	}
-
 	if (filter) img.style.filter = filter;
 	if (opacity != null) img.style.opacity = String(opacity);
 
-	wrap.appendChild(img);
 	applyDuotoneFallback(wrap, pic);
 
 	// Hyperlinked image: wrap and hoist positioning onto the anchor so the

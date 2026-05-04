@@ -4,7 +4,14 @@ import type { ShapeEffects, OuterShadow, InnerShadow, Glow, SoftEdge, Reflection
 import type { LineStyle, LineEnd } from '../fill';
 import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
 import { renderParagraph, type AutoNumState, type BodyTextContext, type FieldContext } from './text';
-import { solidColorFromFill, fillToCssBackground, lineDashToCss, svgDashArray } from './fill-utils';
+import {
+	approxSolidColorFromFill,
+	fillToCssBackground,
+	fillToSvgPaint,
+	applyCropOverlay,
+	lineDashToCss,
+	svgDashArray,
+} from './fill-utils';
 import { presetToSvgPath } from '../preset-geom';
 import { wrapInHyperlink } from './hyperlink';
 
@@ -49,19 +56,19 @@ export function renderShape(
 	const hasArrowHead = lineHasArrowHead(shape.line);
 
 	if (shape.custGeom && !isDegenerateLine) {
-		el.appendChild(renderCustGeomSvg(shape));
+		el.appendChild(renderCustGeomSvg(shape, embedUrls));
 	} else if (shape.presetGeom && !isDegenerateLine) {
-		const svg = renderPresetGeomSvg(shape);
+		const svg = renderPresetGeomSvg(shape, embedUrls);
 		if (svg) {
 			el.appendChild(svg);
 		} else {
 			// Unknown preset — fall back to the plain-box look.
 			applyBoxFill(el, shape, embedUrls);
 		}
-	} else if (isDegenerateLine && hasArrowHead && solidColorFromFill(shape.line?.fill ?? null)) {
+	} else if (isDegenerateLine && hasArrowHead && shape.line?.fill && shape.line.fill.kind !== 'none') {
 		// Arrow-head-bearing connector with a degenerate dimension — render
 		// as an oversized inline SVG so the marker has space to draw.
-		renderDegenerateLineSvg(el, shape);
+		renderDegenerateLineSvg(el, shape, embedUrls);
 	} else {
 		applyBoxFill(el, shape, embedUrls);
 	}
@@ -191,10 +198,36 @@ function renderTextBody(
 // with no custGeom or preset, or with an unrecognised preset).
 function applyBoxFill(el: HTMLElement, shape: Shape, embedUrls: Map<string, string>): void {
 	const bg = fillToCssBackground(shape.fill, embedUrls);
-	if (bg) el.style.background = bg;
-	// TODO: support gradient / blip / pattern line fills; currently only
-	// the solid color path is honoured for strokes.
-	const lineColor = solidColorFromFill(shape.line?.fill ?? null);
+	if (bg) {
+		if (bg.kind === 'css') {
+			el.style.background = bg.value;
+		} else {
+			// blipFill — honour <a:srcRect> via an overlay <img> so crops
+			// render correctly. Plain `background-image` can't crop to a
+			// sub-rectangle; the overlay wrapper is overflow:hidden and the
+			// <img> is positioned/scaled to expose only the visible crop.
+			if (bg.tile) {
+				// TODO: tile mode still uses background-repeat (same caveat
+				// as before — srcRect can't be honoured for tiling in CSS).
+				el.style.backgroundImage = `url("${bg.src.replace(/"/g, '\\"')}")`;
+				el.style.backgroundRepeat = 'repeat';
+				el.style.backgroundPosition = 'top left';
+				el.style.backgroundSize = 'auto';
+			} else {
+				if (!el.style.position) el.style.position = 'absolute';
+				applyCropOverlay(el, bg.src, bg.srcRectPermille);
+			}
+		}
+	}
+	// Line/stroke. The CSS border path can only carry a flat color; for
+	// non-solid line fills we fall back to a best-effort approximation:
+	// gradient → first stop, pattern → fg color, blip → a neutral grey
+	// (blips can't be painted into a CSS border — TODO: use an SVG overlay
+	// when blip strokes on plain rectangles matter enough). Shapes that go
+	// through the SVG path instead pick up full gradient/pattern/blip
+	// strokes via fillToSvgPaint.
+	let lineColor = approxSolidColorFromFill(shape.line?.fill ?? null);
+	if (lineColor == null && shape.line?.fill?.kind === 'blip') lineColor = '#808080';
 	if (shape.line && lineColor) {
 		const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;
 		const isHLine = shape.cy === 0;
@@ -313,6 +346,7 @@ function buildShapeSvg(
 	vbH: number,
 	d: string,
 	closed: boolean,
+	embedUrls: Map<string, string>,
 	fillOverride?: 'none',
 ): SVGSVGElement {
 	const svg = document.createElementNS(SVG_NS, "svg");
@@ -321,24 +355,48 @@ function buildShapeSvg(
 	svg.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
 	svg.setAttribute("preserveAspectRatio", "none");
 	Object.assign(svg.style, { position: "absolute", left: "0", top: "0", width: "100%", height: "100%" });
+
+	// Lazy <defs> — both fill and stroke paint servers (gradients, patterns,
+	// blips) drop their elements in here.
+	const defs = document.createElementNS(SVG_NS, "defs");
+
 	const path = document.createElementNS(SVG_NS, "path");
 	path.setAttribute("d", d);
-	const effectiveFill = fillOverride === 'none'
-		? "none"
-		: (shape.fill?.kind === 'solid' ? shape.fill.colorHex : "none");
-	path.setAttribute("fill", effectiveFill);
-	const strokeColor = solidColorFromFill(shape.line?.fill ?? null);
-	if (strokeColor) {
-		path.setAttribute("stroke", strokeColor);
-		const widthPx = shape.line!.widthEmu != null ? Math.max(emuToPx(shape.line!.widthEmu), 0.5) : 1;
+
+	// Fill — supports the full union (solid/gradient/pattern/blip) via
+	// fillToSvgPaint. `fillOverride === 'none'` takes precedence.
+	if (fillOverride === 'none') {
+		path.setAttribute("fill", "none");
+	} else {
+		const fillPaint = fillToSvgPaint(shape.fill, embedUrls, 'pptxjs-fill');
+		if (fillPaint) {
+			path.setAttribute("fill", fillPaint.paint);
+			for (const d of fillPaint.defs) defs.appendChild(d);
+		} else {
+			path.setAttribute("fill", "none");
+		}
+	}
+
+	// Stroke — supports the full fill union as well. Gradients/patterns/blips
+	// land in <defs> and the stroke attr references them via `url(#id)`.
+	const strokePaint = shape.line ? fillToSvgPaint(shape.line.fill, embedUrls, 'pptxjs-stroke') : null;
+	if (strokePaint && shape.line) {
+		path.setAttribute("stroke", strokePaint.paint);
+		for (const d of strokePaint.defs) defs.appendChild(d);
+		const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;
 		path.setAttribute("stroke-width", String(widthPx));
 		path.setAttribute("vector-effect", "non-scaling-stroke");
-		applyStrokeStyling(svg, path, shape.line!, strokeColor);
-	} else if (!closed && effectiveFill === "none") {
+		// Marker colors match the stroke's best-effort solid approximation
+		// (markers can't reference paint servers cleanly across renderers).
+		const markerColor = approxSolidColorFromFill(shape.line.fill) ?? '#000';
+		applyStrokeStyling(svg, path, shape.line, markerColor);
+	} else if (!closed && path.getAttribute("fill") === "none") {
 		path.setAttribute("stroke", "#000");
 		path.setAttribute("stroke-width", "1");
 		path.setAttribute("vector-effect", "non-scaling-stroke");
 	}
+
+	if (defs.childNodes.length > 0) svg.appendChild(defs);
 	svg.appendChild(path);
 	return svg;
 }
@@ -463,8 +521,10 @@ function addArrowMarker(svg: SVGSVGElement, end: LineEnd, color: string, which: 
 // markers have room to draw. Expands the container slightly along the
 // vanishing axis so the marker isn't clipped. Uses pixel coordinates in the
 // viewBox so marker sizing doesn't get skewed by preserveAspectRatio scaling.
-function renderDegenerateLineSvg(el: HTMLElement, shape: Shape): void {
-	const lineColor = solidColorFromFill(shape.line!.fill ?? null)!;
+function renderDegenerateLineSvg(el: HTMLElement, shape: Shape, embedUrls: Map<string, string>): void {
+	const strokePaint = fillToSvgPaint(shape.line!.fill, embedUrls, 'pptxjs-stroke');
+	if (!strokePaint) return;
+	const markerColor = approxSolidColorFromFill(shape.line!.fill) ?? '#000';
 	const widthPx = shape.line!.widthEmu != null ? Math.max(emuToPx(shape.line!.widthEmu), 0.5) : 1;
 	// Rough marker size budget — diameter of the largest marker we'll draw,
 	// in pixels. `endSizeFactor` tops out at 2.5x, and markerUnits=strokeWidth
@@ -494,6 +554,12 @@ function renderDegenerateLineSvg(el: HTMLElement, shape: Shape): void {
 	// Preserve aspect ratio so markers render as squares, not stretched.
 	svg.setAttribute("preserveAspectRatio", "none");
 	Object.assign(svg.style, { position: "absolute", left: "0", top: "0", width: "100%", height: "100%", overflow: "visible" });
+	// Paint-server defs (gradient/pattern/blip strokes) go in a lazy <defs>.
+	if (strokePaint.defs.length > 0) {
+		const defs = document.createElementNS(SVG_NS, "defs");
+		for (const d of strokePaint.defs) defs.appendChild(d);
+		svg.appendChild(defs);
+	}
 	const path = document.createElementNS(SVG_NS, "path");
 	// Draw the line through the middle of the thickness axis.
 	const mid = thicknessPx / 2;
@@ -502,26 +568,26 @@ function renderDegenerateLineSvg(el: HTMLElement, shape: Shape): void {
 		isHLine ? `M 0 ${mid} L ${lengthPx} ${mid}` : `M ${mid} 0 L ${mid} ${lengthPx}`,
 	);
 	path.setAttribute("fill", "none");
-	path.setAttribute("stroke", lineColor);
+	path.setAttribute("stroke", strokePaint.paint);
 	path.setAttribute("stroke-width", String(widthPx));
-	applyStrokeStyling(svg, path, shape.line!, lineColor);
+	applyStrokeStyling(svg, path, shape.line!, markerColor);
 	svg.appendChild(path);
 	el.appendChild(svg);
 }
 
-export function renderCustGeomSvg(shape: Shape): SVGSVGElement {
+export function renderCustGeomSvg(shape: Shape, embedUrls: Map<string, string>): SVGSVGElement {
 	const vbW = shape.custGeom!.pathW || Math.max(shape.cx, 1);
 	const vbH = shape.custGeom!.pathH || Math.max(shape.cy, 1);
 	const fillOverride = shape.custGeom!.fillMode === 'none' ? 'none' : undefined;
-	return buildShapeSvg(shape, vbW, vbH, shape.custGeom!.d, shape.custGeom!.closed, fillOverride);
+	return buildShapeSvg(shape, vbW, vbH, shape.custGeom!.d, shape.custGeom!.closed, embedUrls, fillOverride);
 }
 
-export function renderPresetGeomSvg(shape: Shape): SVGSVGElement | null {
+export function renderPresetGeomSvg(shape: Shape, embedUrls: Map<string, string>): SVGSVGElement | null {
 	const pg = shape.presetGeom!;
 	const vbW = Math.max(shape.cx, 1);
 	const vbH = Math.max(shape.cy, 1);
 	const d = presetToSvgPath(pg.name, vbW, vbH, pg.avLst);
 	if (d == null) return null;
 	const closed = pg.name !== "line" && pg.name !== "straightConnector1";
-	return buildShapeSvg(shape, vbW, vbH, d, closed);
+	return buildShapeSvg(shape, vbW, vbH, d, closed, embedUrls);
 }

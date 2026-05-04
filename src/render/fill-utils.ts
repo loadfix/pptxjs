@@ -3,11 +3,31 @@
 // should use `fillToCssBackground` below.
 
 import type { Fill, GradientFill, BlipFill, PatternFill, LineStyle } from '../fill';
+import { SVG_NS } from './geom';
 
 export function solidColorFromFill(fill: Fill | null): string | null {
 	if (!fill) return null;
 	if (fill.kind === 'solid') return fill.colorHex;
 	return null;
+}
+
+// A best-effort single-color approximation of any Fill, for places where the
+// rendering surface can only carry a flat color (e.g. CSS `border:`). For
+// non-solids: gradients return the first stop, patterns return fgColor, blips
+// return null (caller supplies its own neutral). Alphas are ignored.
+export function approxSolidColorFromFill(fill: Fill | null): string | null {
+	if (!fill) return null;
+	switch (fill.kind) {
+		case 'none': return null;
+		case 'solid': return fill.colorHex;
+		case 'gradient': {
+			if (fill.stops.length === 0) return null;
+			const sorted = [...fill.stops].sort((a, b) => a.posPermille - b.posPermille);
+			return sorted[0].colorHex;
+		}
+		case 'pattern': return fill.fgColorHex;
+		case 'blip': return null;
+	}
 }
 
 // Map DrawingML <a:prstDash> onto the closest CSS border-style token. "solid"
@@ -55,29 +75,195 @@ export function svgDashArray(dash: LineStyle['dash']): string | null {
 	}
 }
 
-// Produce a CSS value suitable for `element.style.background`. Returns null
-// when the fill is absent or explicitly <a:noFill/>. Non-solid fills are
-// mapped as follows:
-//   gradient linear → `linear-gradient(Ndeg, stop%, ...)`
-//   gradient path   → `radial-gradient(circle at center, stops)`
-//   blip            → `url(<blob-url>)` with best-effort size/repeat
-//   pattern         → inline SVG data URL for a small set of presets,
-//                     falling back to the fg color for unsupported ones.
-//
-// `embedUrls` maps the rId on a BlipFill to a resolved blob/data URL. A
-// BlipFill whose rId isn't in the map returns null (caller should fall back
-// to whatever background already exists).
-export function fillToCssBackground(
+// A monotonically-increasing counter for <defs> ids so multiple invocations
+// of `fillToSvgPaint` don't collide on `url(#id)`.
+let svgPaintIdCounter = 0;
+
+// SVG paint description returned by `fillToSvgPaint`. Callers use `paint` as
+// the value of stroke/fill (e.g. `#rrggbb` for solids, `url(#id)` for defs)
+// and append every element in `defs` to their svg's <defs>.
+export interface SvgPaint {
+	paint: string;
+	defs: SVGElement[];
+}
+
+// Convert any Fill into an SVG paint. Returns null when the fill is absent
+// or <a:noFill/>. Solids come back with `paint = '#rrggbb'` and no defs;
+// gradients/patterns/blips return a `url(#id)` paint plus the paintServer
+// element that should be appended to the caller's <defs>.
+export function fillToSvgPaint(
 	fill: Fill | null,
 	embedUrls: Map<string, string>,
-): string | null {
+	idPrefix = 'pptxjs-paint',
+): SvgPaint | null {
 	if (!fill) return null;
 	switch (fill.kind) {
 		case 'none': return null;
-		case 'solid': return fill.colorHex;
-		case 'gradient': return gradientToCss(fill);
-		case 'blip': return blipToCss(fill, embedUrls);
-		case 'pattern': return patternToCss(fill);
+		case 'solid': return { paint: fill.colorHex, defs: [] };
+		case 'gradient': return svgPaintForGradient(fill, idPrefix);
+		case 'pattern': return svgPaintForPattern(fill, idPrefix);
+		case 'blip': return svgPaintForBlip(fill, embedUrls, idPrefix);
+	}
+}
+
+function nextPaintId(idPrefix: string): string {
+	svgPaintIdCounter += 1;
+	return `${idPrefix}-${svgPaintIdCounter}`;
+}
+
+function svgPaintForGradient(fill: GradientFill, idPrefix: string): SvgPaint | null {
+	if (fill.stops.length === 0) return null;
+	const stops = [...fill.stops].sort((a, b) => a.posPermille - b.posPermille);
+	const id = nextPaintId(idPrefix);
+	let el: SVGElement;
+	if (fill.variant.kind === 'linear') {
+		// Convert OOXML angle (clockwise from east, 60000ths of a degree) to
+		// SVG gradient vector coordinates on a unit box. The gradient vector
+		// points in the direction of increasing stop position.
+		const ooxmlDeg = fill.variant.angle / 60000;
+		const rad = (ooxmlDeg * Math.PI) / 180;
+		const dx = Math.cos(rad);
+		const dy = Math.sin(rad);
+		// Project a unit direction onto [0,1]x[0,1] so the vector spans the
+		// bounding box diagonally when at 45°.
+		const x1 = 0.5 - dx / 2;
+		const y1 = 0.5 - dy / 2;
+		const x2 = 0.5 + dx / 2;
+		const y2 = 0.5 + dy / 2;
+		el = document.createElementNS(SVG_NS, 'linearGradient');
+		el.setAttribute('id', id);
+		el.setAttribute('gradientUnits', 'objectBoundingBox');
+		el.setAttribute('x1', x1.toFixed(4));
+		el.setAttribute('y1', y1.toFixed(4));
+		el.setAttribute('x2', x2.toFixed(4));
+		el.setAttribute('y2', y2.toFixed(4));
+	} else {
+		// Path-type gradients (circle / rect / shape) — map to a centered
+		// radial gradient. SVG doesn't natively render rect/shape gradients.
+		el = document.createElementNS(SVG_NS, 'radialGradient');
+		el.setAttribute('id', id);
+		el.setAttribute('gradientUnits', 'objectBoundingBox');
+		el.setAttribute('cx', '0.5');
+		el.setAttribute('cy', '0.5');
+		el.setAttribute('r', '0.5');
+	}
+	for (const s of stops) {
+		const stop = document.createElementNS(SVG_NS, 'stop');
+		const offset = Math.max(0, Math.min(100, s.posPermille / 1000));
+		stop.setAttribute('offset', `${offset.toFixed(2)}%`);
+		stop.setAttribute('stop-color', s.colorHex);
+		if (s.alpha != null) {
+			const a = Math.max(0, Math.min(1, s.alpha / 100000));
+			stop.setAttribute('stop-opacity', a.toFixed(3));
+		}
+		el.appendChild(stop);
+	}
+	return { paint: `url(#${id})`, defs: [el] };
+}
+
+function svgPaintForPattern(fill: PatternFill, idPrefix: string): SvgPaint {
+	const id = nextPaintId(idPrefix);
+	const pattern = document.createElementNS(SVG_NS, 'pattern');
+	pattern.setAttribute('id', id);
+	pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+	// Dimensions come from the preset's natural tile size; use a fixed 8x8
+	// canvas for percent/ltHorz/etc. presets and 16x16 for brick variants.
+	const svgStr = svgForPatternPreset(fill.preset, fill.fgColorHex, fill.bgColorHex);
+	if (!svgStr) {
+		// Unsupported preset — fall back to a solid fg swatch as the pattern.
+		pattern.setAttribute('width', '8');
+		pattern.setAttribute('height', '8');
+		const rect = document.createElementNS(SVG_NS, 'rect');
+		rect.setAttribute('width', '8');
+		rect.setAttribute('height', '8');
+		rect.setAttribute('fill', fill.fgColorHex);
+		pattern.appendChild(rect);
+		return { paint: `url(#${id})`, defs: [pattern] };
+	}
+	// Parse the preset SVG string and copy its inner rect/path nodes into
+	// the pattern. The outer <svg>'s width/height become the pattern's
+	// tile size.
+	const parser = new DOMParser();
+	const doc = parser.parseFromString(svgStr, 'image/svg+xml');
+	const root = doc.documentElement;
+	const w = root.getAttribute('width') || '8';
+	const h = root.getAttribute('height') || '8';
+	pattern.setAttribute('width', w);
+	pattern.setAttribute('height', h);
+	for (const child of Array.from(root.childNodes)) {
+		if (child.nodeType === 1) {
+			// Import into the live document so it's in the correct namespace.
+			pattern.appendChild(document.importNode(child, true));
+		}
+	}
+	return { paint: `url(#${id})`, defs: [pattern] };
+}
+
+function svgPaintForBlip(
+	fill: BlipFill,
+	embedUrls: Map<string, string>,
+	idPrefix: string,
+): SvgPaint | null {
+	const url = embedUrls.get(fill.rId);
+	if (!url) return null;
+	const id = nextPaintId(idPrefix);
+	const pattern = document.createElementNS(SVG_NS, 'pattern');
+	pattern.setAttribute('id', id);
+	pattern.setAttribute('patternUnits', 'objectBoundingBox');
+	pattern.setAttribute('width', '1');
+	pattern.setAttribute('height', '1');
+	const image = document.createElementNS(SVG_NS, 'image');
+	image.setAttribute('href', url);
+	// Legacy viewers ignore `href` and require the xlink: variant.
+	image.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', url);
+	image.setAttribute('width', '1');
+	image.setAttribute('height', '1');
+	image.setAttribute('preserveAspectRatio', 'none');
+	pattern.appendChild(image);
+	return { paint: `url(#${id})`, defs: [pattern] };
+}
+
+// Describes what `fillToCssBackground` wants its caller to do. The common
+// case is `{ kind: 'css', value: '<css-value>' }` which the caller assigns
+// to `element.style.background`. For blips with a crop, the fill can't be
+// expressed as a plain background and the caller must overlay an <img>.
+export type CssFillResult =
+	| { kind: 'css'; value: string }
+	| { kind: 'overlay'; src: string; srcRectPermille: { l: number; t: number; r: number; b: number } | null; tile: boolean }
+	| null;
+
+// Produce a structured description of how to paint `fill` onto an HTML box.
+// Returns null when the fill is absent or explicitly <a:noFill/>. Solid /
+// gradient / pattern fills come back as `{ kind: 'css' }`. Blip fills come
+// back as `{ kind: 'overlay' }` so the caller can honour <a:srcRect> via an
+// inner <img> + overflow:hidden (plain `background-image` can't crop to a
+// sub-rectangle).
+export function fillToCssBackground(
+	fill: Fill | null,
+	embedUrls: Map<string, string>,
+): CssFillResult {
+	if (!fill) return null;
+	switch (fill.kind) {
+		case 'none': return null;
+		case 'solid': return { kind: 'css', value: fill.colorHex };
+		case 'gradient': {
+			const v = gradientToCss(fill);
+			return v ? { kind: 'css', value: v } : null;
+		}
+		case 'blip': {
+			const url = embedUrls.get(fill.rId);
+			if (!url) return null;
+			return {
+				kind: 'overlay',
+				src: url,
+				srcRectPermille: fill.srcRectPermille,
+				tile: !fill.stretch,
+			};
+		}
+		case 'pattern': {
+			const v = patternToCss(fill);
+			return v ? { kind: 'css', value: v } : null;
+		}
 	}
 }
 
@@ -108,21 +294,6 @@ function gradientToCss(fill: GradientFill): string | null {
 	return `radial-gradient(circle at center, ${stopStr})`;
 }
 
-function blipToCss(fill: BlipFill, embedUrls: Map<string, string>): string | null {
-	const url = embedUrls.get(fill.rId);
-	if (!url) return null;
-	// OOXML `srcRect` crops the source image before layout; we can't truly
-	// crop with just `background-image`, so we degrade to best-effort
-	// size/position. Full crop fidelity would need an overlay/clip path.
-	// TODO: honour srcRectPermille properly via an inner <img> + clip.
-	const urlPart = `url("${url.replace(/"/g, '\\"')}")`;
-	if (fill.stretch) {
-		return `${urlPart} center / 100% 100% no-repeat`;
-	}
-	// Tile: let the browser repeat at natural size.
-	return `${urlPart} top left / auto repeat`;
-}
-
 function patternToCss(fill: PatternFill): string | null {
 	const svg = svgForPatternPreset(fill.preset, fill.fgColorHex, fill.bgColorHex);
 	if (svg) {
@@ -136,6 +307,52 @@ function patternToCss(fill: PatternFill): string | null {
 	}
 	// Unsupported preset — fall back to the foreground color.
 	return fill.fgColorHex;
+}
+
+// Per-mille denominator shared with pic.ts (see PERMILLE there). 100000 = 100%.
+const PERMILLE = 100000;
+
+// Shared crop-overlay implementation used by both shape.ts (for blipFill
+// backgrounds) and pic.ts (for direct <p:pic> rendering). Given a wrapper
+// element, an image URL, and an optional srcRect, appends an <img> to the
+// wrapper that honours the crop — either by positioning an oversized <img>
+// inside `overflow:hidden` (when srcRect is present) or by stretching to
+// 100% otherwise. Returns the appended <img> so callers can further tweak
+// it (filter/opacity/alt/title).
+export function applyCropOverlay(
+	wrap: HTMLElement,
+	src: string,
+	srcRectPermille: { l: number; t: number; r: number; b: number } | null,
+): HTMLImageElement {
+	const img = document.createElement('img');
+	img.src = src;
+	if (srcRectPermille) {
+		const { l, t, r, b } = srcRectPermille;
+		const cropWFrac = 1 - (l + r) / PERMILLE;
+		const cropHFrac = 1 - (t + b) / PERMILLE;
+		if (cropWFrac > 0 && cropHFrac > 0) {
+			wrap.style.overflow = 'hidden';
+			// The wrapper needs a positioning context so the <img>'s absolute
+			// positioning resolves against it. Callers already set position
+			// elsewhere (shape/pic wrappers are `position: absolute`), but
+			// make it explicit in case the wrapper is a raw <div>.
+			if (!wrap.style.position) wrap.style.position = 'relative';
+			img.style.position = 'absolute';
+			img.style.width = `${100 / cropWFrac}%`;
+			img.style.height = `${100 / cropHFrac}%`;
+			img.style.left = `${-(l / PERMILLE) * (100 / cropWFrac)}%`;
+			img.style.top = `${-(t / PERMILLE) * (100 / cropHFrac)}%`;
+			img.style.maxWidth = 'none';
+			img.style.maxHeight = 'none';
+			wrap.appendChild(img);
+			return img;
+		}
+	}
+	img.style.width = '100%';
+	img.style.height = '100%';
+	img.style.objectFit = 'fill';
+	wrap.appendChild(img);
+	return img;
 }
 
 // Build an inline SVG for a subset of OOXML pattern presets. Returns null
