@@ -4,8 +4,9 @@ import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
 import { renderParagraph, type AutoNumState } from './text';
 import { solidColorFromFill, fillToCssBackground } from './fill-utils';
 import { presetToSvgPath } from '../preset-geom';
+import { wrapInHyperlink } from './hyperlink';
 
-export function renderShape(shape: Shape, cls: string, embedUrls: Map<string, string>): HTMLElement {
+export function renderShape(shape: Shape, cls: string, embedUrls: Map<string, string>, hyperlinkUrls: Map<string, string>): HTMLElement {
 	const el = document.createElement("div");
 	el.className = `${cls}-shape`;
 	Object.assign(el.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
@@ -33,7 +34,30 @@ export function renderShape(shape: Shape, cls: string, embedUrls: Map<string, st
 
 	const autoNumState: AutoNumState = new Map();
 	for (const p of shape.paragraphs) {
-		el.appendChild(renderParagraph(p, autoNumState));
+		el.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls));
+	}
+	// Whole-shape click-action: wrap the positioned box in an <a>. The anchor
+	// inherits the shape's position so the hit area is the shape itself.
+	if (shape.hyperlinkRId && hyperlinkUrls.has(shape.hyperlinkRId)) {
+		// Move positioning from the shape to the anchor so the <a> occupies the
+		// shape's click area — otherwise the anchor collapses to zero size.
+		const anchorStyles = {
+			position: el.style.position,
+			left: el.style.left,
+			top: el.style.top,
+			width: el.style.width,
+			height: el.style.height,
+		};
+		el.style.position = "relative";
+		el.style.left = "0";
+		el.style.top = "0";
+		el.style.width = "100%";
+		el.style.height = "100%";
+		const wrapped = wrapInHyperlink(el, shape.hyperlinkRId, hyperlinkUrls);
+		if (wrapped !== el) {
+			Object.assign(wrapped.style, anchorStyles, { display: "block" });
+		}
+		return wrapped;
 	}
 	return el;
 }

@@ -1,11 +1,12 @@
 import type { Paragraph, Run, TextRun } from '../presentation-parser';
 import { emuToPx } from './geom';
+import { wrapInHyperlink } from './hyperlink';
 
 // Counters for auto-numbered bullets within the current shape, keyed by
 // paragraph level. Reset at each new shape.
 export type AutoNumState = Map<number, number>;
 
-export function renderParagraph(p: Paragraph, autoNumState: AutoNumState): HTMLElement {
+export function renderParagraph(p: Paragraph, autoNumState: AutoNumState, hyperlinkUrls: Map<string, string>): HTMLElement {
 	const el = document.createElement("p");
 	el.style.margin = "0";
 
@@ -75,7 +76,7 @@ export function renderParagraph(p: Paragraph, autoNumState: AutoNumState): HTMLE
 	}
 
 	for (const run of p.runs) {
-		el.appendChild(renderRun(run));
+		el.appendChild(renderRun(run, hyperlinkUrls));
 	}
 	return el;
 }
@@ -122,7 +123,7 @@ export function toRoman(n: number): string {
 	return out || "I";
 }
 
-export function renderRun(run: Run): HTMLElement {
+export function renderRun(run: Run, hyperlinkUrls: Map<string, string>): HTMLElement {
 	// Wave 2 — render BreakRun as <br>, FieldRun via field substitution.
 	if (run.kind === 'break') {
 		return document.createElement("br");
@@ -135,26 +136,13 @@ export function renderRun(run: Run): HTMLElement {
 		el.setAttribute("data-pptx-field", run.fieldType);
 		el.textContent = run.fallbackText;
 		applyRunStyle(el, run.style);
-		return wrapHyperlinkIfNeeded(el, run.style);
+		return wrapInHyperlink(el, run.style.hyperlinkRId, hyperlinkUrls);
 	}
 	// kind === 'text'
 	const el = document.createElement("span");
 	el.textContent = run.text;
 	applyRunStyle(el, run.style);
-	return wrapHyperlinkIfNeeded(el, run.style);
-}
-
-// If the run style carries a hyperlink relationship id, wrap the span in an
-// <a>. Rel lookup isn't available in this module, so we emit a placeholder
-// href and a data attribute; P9 (hyperlinks) resolves it in a later pass.
-function wrapHyperlinkIfNeeded(el: HTMLElement, s: TextRun['style']): HTMLElement {
-	if (!s.hyperlinkRId) return el;
-	// TODO(P9): resolve hyperlinkRId to the real target URL via slide rels.
-	const a = document.createElement("a");
-	a.setAttribute("href", "#");
-	a.setAttribute("data-pptx-rel-id", s.hyperlinkRId);
-	a.appendChild(el);
-	return a;
+	return wrapInHyperlink(el, run.style.hyperlinkRId, hyperlinkUrls);
 }
 
 function applyRunStyle(el: HTMLElement, s: TextRun['style']): void {

@@ -38,6 +38,26 @@ const LAYOUT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/r
 const MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster";
 const THEME_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme";
 const IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+const HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+const SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
+
+// Whitelist of URL schemes that may appear in a rendered <a href>. Everything
+// else — `javascript:`, `data:`, `file:`, `vbscript:`, custom schemes — is
+// dropped on load so a malicious PPTX can't smuggle script execution through
+// a hyperlink. `ppaction:` is parsed (for intra-deck jumps) before it reaches
+// the anchor and is translated to a `#slide-N` fragment, so it never lands in
+// the final href as a bare scheme.
+const SAFE_HYPERLINK_SCHEMES = new Set(["http:", "https:", "mailto:", "tel:"]);
+
+export function isSafeHyperlinkHref(href: string): boolean {
+	// Fragment-only and relative links are safe (they can't execute code).
+	if (href.startsWith("#")) return true;
+	// Extract scheme: scheme:[rest]. Must start with a letter and be followed
+	// by letters/digits/+-./ per RFC 3986.
+	const m = /^([a-zA-Z][a-zA-Z0-9+\-.]*):/.exec(href);
+	if (!m) return true; // no scheme → relative URL, safe
+	return SAFE_HYPERLINK_SCHEMES.has(m[1].toLowerCase() + ":");
+}
 
 interface MasterBundle {
 	placeholders: PlaceholderMap;
@@ -93,6 +113,11 @@ export class Presentation {
 			if (!rel) continue;
 			slidePaths.push(resolveRelTarget(presPath, rel.target));
 		}
+		// Map each slide's package path → its 0-based index, used to translate
+		// slide-to-slide relationships (Target="../slides/slide3.xml") to the
+		// `#slide-N` anchor fragment the renderer emits on <section>.
+		const slidePathToIndex = new Map<string, number>();
+		for (let i = 0; i < slidePaths.length; i++) slidePathToIndex.set(slidePaths[i], i);
 
 		const layoutCache = new Map<string, LayoutBundle>();
 		const masterCache = new Map<string, MasterBundle>();
@@ -210,6 +235,45 @@ export class Presentation {
 			return loadSlideEmbeds(partPath);
 		}
 
+		// Resolve all hyperlink relationships attached to a slide. External
+		// targets (http/https/mailto/…) pass straight through after a scheme
+		// check. Slide-to-slide rels become `#slide-N` fragments using the
+		// presentation's slide order. `ppaction://hlinkshowjump` targets
+		// (firstslide / lastslide / nextslide / previousslide / sldjump) are
+		// resolved against the current slide's index.
+		async function loadSlideHyperlinks(slidePath: string, slideIndex: number): Promise<Map<string, string>> {
+			const out = new Map<string, string>();
+			const slideRels = await pkg.loadRelationships(slidePath);
+			for (const rel of slideRels.values()) {
+				if (rel.type === HYPERLINK_REL_TYPE) {
+					const target = rel.target;
+					if (!target) continue;
+					// ppaction://hlinkshowjump?jump=firstslide (and friends). The rel
+					// Target carries the ppaction URI verbatim; TargetMode is
+					// usually "External" but we don't rely on that — the scheme
+					// tells us how to interpret it.
+					if (target.startsWith("ppaction://")) {
+						const resolved = resolvePpAction(target, slideIndex, slidePaths.length);
+						if (resolved) out.set(rel.id, resolved);
+						else if (typeof console !== "undefined") console.warn(`pptxjs: unrecognised ppaction hyperlink: ${target}`);
+						continue;
+					}
+					if (!isSafeHyperlinkHref(target)) {
+						if (typeof console !== "undefined") console.warn(`pptxjs: dropped hyperlink with unsafe scheme: ${target}`);
+						continue;
+					}
+					out.set(rel.id, target);
+				} else if (rel.type === SLIDE_REL_TYPE) {
+					// Intra-deck slide-to-slide link. The Target resolves to a
+					// slide part path; look it up in the presentation's order.
+					const targetPath = resolveRelTarget(slidePath, rel.target);
+					const idx = slidePathToIndex.get(targetPath);
+					if (idx != null) out.set(rel.id, `#slide-${idx}`);
+				}
+			}
+			return out;
+		}
+
 		for (let i = 0; i < slidePaths.length; i++) {
 			const path = slidePaths[i];
 			const doc = await pkg.loadXml(path);
@@ -256,6 +320,11 @@ export class Presentation {
 
 			// Prepend static chrome so slide content renders on top.
 			slide.shapes = [...staticShapes, ...slide.shapes];
+
+			// Resolve hyperlink rels for this slide (external URLs + intra-deck
+			// jumps). Must be attached after parseSlide since parseSlide returns
+			// a fresh empty map.
+			slide.hyperlinkUrls = await loadSlideHyperlinks(path, i);
 
 			// Background cascade: slide → layout → master. First hit wins.
 			slide.background =
@@ -336,4 +405,23 @@ async function resolveGraphicFrameFallbacks(
 		out.push(s);
 	}
 	return out;
+}
+
+// Translate a `ppaction://hlinkshowjump?jump=...` URI to a `#slide-N` fragment
+// relative to the current slide index and total slide count. Returns null for
+// unknown or non-mappable actions (e.g. `endshow`) so callers can warn and
+// skip.
+function resolvePpAction(target: string, slideIndex: number, slideCount: number): string | null {
+	const q = target.split("?")[1] ?? "";
+	const jumpMatch = /(?:^|&)jump=([^&]+)/.exec(q);
+	const action = jumpMatch?.[1];
+	switch (action) {
+		case "firstslide": return `#slide-0`;
+		case "lastslide": return slideCount > 0 ? `#slide-${slideCount - 1}` : null;
+		case "nextslide": return slideIndex + 1 < slideCount ? `#slide-${slideIndex + 1}` : null;
+		case "previousslide": return slideIndex > 0 ? `#slide-${slideIndex - 1}` : null;
+		// `endshow`, `lastslideviewed`, `sldjump` (with no jump= arg), etc. —
+		// no sensible HTML mapping, drop silently.
+		default: return null;
+	}
 }

@@ -1,11 +1,12 @@
 import type { PicShape } from '../presentation-parser';
 import { positionStyle, transformStyle } from './geom';
+import { wrapInHyperlink } from './hyperlink';
 
 // Per-mille denominator used throughout OOXML blip-effect attributes
 // (srcRect/alphaModFix/lum/biLevel/tile). 100000 = 100%.
 const PERMILLE = 100000;
 
-export function renderPic(pic: PicShape, cls: string): HTMLElement {
+export function renderPic(pic: PicShape, cls: string, hyperlinkUrls: Map<string, string>): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-pic`;
 	Object.assign(wrap.style, positionStyle(pic.x, pic.y, pic.cx, pic.cy));
@@ -71,6 +72,28 @@ export function renderPic(pic: PicShape, cls: string): HTMLElement {
 
 	wrap.appendChild(img);
 	applyDuotoneFallback(wrap, pic);
+
+	// Hyperlinked image: wrap and hoist positioning onto the anchor so the
+	// click area matches the pic box.
+	if (pic.hyperlinkRId && hyperlinkUrls.has(pic.hyperlinkRId)) {
+		const anchorStyles = {
+			position: wrap.style.position,
+			left: wrap.style.left,
+			top: wrap.style.top,
+			width: wrap.style.width,
+			height: wrap.style.height,
+		};
+		wrap.style.position = "relative";
+		wrap.style.left = "0";
+		wrap.style.top = "0";
+		wrap.style.width = "100%";
+		wrap.style.height = "100%";
+		const wrapped = wrapInHyperlink(wrap, pic.hyperlinkRId, hyperlinkUrls);
+		if (wrapped !== wrap) {
+			Object.assign(wrapped.style, anchorStyles, { display: "block" });
+		}
+		return wrapped;
+	}
 	return wrap;
 }
 

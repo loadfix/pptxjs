@@ -30,6 +30,13 @@ export interface Slide {
 	index: number;
 	shapes: ShapeLike[];
 	background: import('./background').BackgroundFill | null;
+	// Resolved hyperlink URLs for this slide, keyed by relationship id. External
+	// URLs (http/https/mailto) are the rel's `Target`. Intra-deck jumps
+	// (`ppaction://hlinkshowjump?jump=...` and slide-to-slide relationships) are
+	// translated to `#slide-N` fragments. URLs with unsafe schemes
+	// (e.g. javascript:) are filtered out during presentation load and not
+	// present in this map — the renderer treats missing entries as "no link".
+	hyperlinkUrls: Map<string, string>;
 }
 
 export type ShapeLike = Shape | PicShape | TableShape | ChartFallbackShape | SmartArtFallbackShape;
@@ -378,7 +385,7 @@ export function parseSlide(doc: Document, index: number, ctx: SlideParseContext)
 	const shapes: ShapeLike[] = [];
 	const spTree = firstChildNS(firstChildNS(doc.documentElement, A_NS.p, "cSld"), A_NS.p, "spTree");
 	if (spTree) walkSpTree(spTree, shapes, ctx);
-	return { index, shapes, background: null };
+	return { index, shapes, background: null, hyperlinkUrls: new Map() };
 }
 
 // Collect non-placeholder shapes from a layout or master — static decoration

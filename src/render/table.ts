@@ -151,6 +151,7 @@ export function renderTable(
 	t: TableShape,
 	cls: string,
 	tableStyles: Map<string, TableStyle> | null,
+	hyperlinkUrls: Map<string, string>,
 ): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-table`;
@@ -193,7 +194,7 @@ export function renderTable(
 			const band = style
 				? resolveBandForCell(style, t.tableFlags, rowIndex, rowCount, colIndex, colCount)
 				: null;
-			tr.appendChild(renderCell(cell, band, rowIndex, rowCount, colIndex, colCount));
+			tr.appendChild(renderCell(cell, band, rowIndex, rowCount, colIndex, colCount, hyperlinkUrls));
 			colIndex += cell.gridSpan || 1;
 		}
 		table.appendChild(tr);
@@ -210,6 +211,7 @@ export function renderCell(
 	rowCount: number,
 	colIndex: number,
 	colCount: number,
+	hyperlinkUrls: Map<string, string>,
 ): HTMLTableCellElement {
 	const td = document.createElement("td");
 
@@ -257,7 +259,7 @@ export function renderCell(
 
 	const autoNumState: AutoNumState = new Map();
 	for (const p of cell.paragraphs) {
-		td.appendChild(renderParagraph(p, autoNumState));
+		td.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls));
 	}
 	return td;
 }
