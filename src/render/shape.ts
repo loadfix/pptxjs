@@ -11,6 +11,9 @@ import {
 	applyCropOverlay,
 	lineDashToCss,
 	svgDashArray,
+	createInlineFilter,
+	nextSvgFilterId,
+	supportsSvgFilters,
 } from './fill-utils';
 import { withAlphaHex } from '../color-math';
 import { presetToSvgPath } from '../preset-geom';
@@ -276,7 +279,7 @@ function applyEffects(el: HTMLElement, fx: ShapeEffects): void {
 	if (fx.glow) boxShadows.push(glowToBoxShadow(fx.glow));
 
 	if (fx.blur) filters.push(blurToFilter(fx.blur));
-	if (fx.softEdge) filters.push(softEdgeToFilter(fx.softEdge));
+	if (fx.softEdge) filters.push(softEdgeToFilter(el, fx.softEdge));
 
 	if (boxShadows.length) el.style.boxShadow = boxShadows.join(', ');
 	if (filters.length) el.style.filter = filters.join(' ');
@@ -315,9 +318,37 @@ function blurToFilter(b: Blur): string {
 	return `blur(${px.toFixed(2)}px)`;
 }
 
-function softEdgeToFilter(s: SoftEdge): string {
+// softEdge feathers the alpha mask of the shape without blurring the
+// interior fill/text. Implemented via an inline SVG <filter>: blur the
+// alpha channel of SourceGraphic, then composite the original source back
+// with operator="in" so only pixels inside the softened alpha survive.
+// Falls back to a CSS `blur()` when SVGFilterElement isn't available —
+// visibly fuzzier but rarely encountered in modern browsers.
+function softEdgeToFilter(el: HTMLElement, s: SoftEdge): string {
 	const px = emuToPx(s.radEmu);
-	return `blur(${px.toFixed(2)}px)`;
+	if (!supportsSvgFilters() || px <= 0) {
+		return `blur(${px.toFixed(2)}px)`;
+	}
+	const id = nextSvgFilterId('pptx-softedge');
+	const { svg, filter } = createInlineFilter(id);
+
+	// Blur SourceAlpha; composite "in" against SourceGraphic. Stretches
+	// the filter region a bit so the softened edge isn't clipped by the
+	// default 10% margin.
+	const blur = document.createElementNS(SVG_NS, 'feGaussianBlur');
+	blur.setAttribute('in', 'SourceAlpha');
+	blur.setAttribute('stdDeviation', (px / 2).toFixed(3));
+	blur.setAttribute('result', 'blurredAlpha');
+	filter.appendChild(blur);
+
+	const composite = document.createElementNS(SVG_NS, 'feComposite');
+	composite.setAttribute('in', 'SourceGraphic');
+	composite.setAttribute('in2', 'blurredAlpha');
+	composite.setAttribute('operator', 'in');
+	filter.appendChild(composite);
+
+	el.appendChild(svg);
+	return `url(#${id})`;
 }
 
 function reflectionToWebkitBoxReflect(r: Reflection): string | null {
