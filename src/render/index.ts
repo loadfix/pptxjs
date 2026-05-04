@@ -5,10 +5,15 @@ import { makeStyleNode } from './style';
 import { applyBackground } from './background';
 import { renderShapeLike } from './dispatch';
 import { renderNotesBlock, renderCommentMarkers } from './notes';
+import { renderHandoutPages } from './handout';
 
 export class HtmlRenderer {
 	async render(presentation: Presentation, options: Options): Promise<Node[]> {
 		const out: Node[] = [];
+		// Collect the rendered slide sections so the handout pass can clone
+		// them into its thumbnail grid. We still push them into `out` in the
+		// main flow — the handout tiles are *copies*, not replacements.
+		const slideSections: HTMLElement[] = [];
 
 		const slideW = emuToPx(presentation.slideSize.cx);
 		const slideH = emuToPx(presentation.slideSize.cy);
@@ -42,6 +47,7 @@ export class HtmlRenderer {
 				banner.appendChild(document.createTextNode(slide.parseError));
 				section.appendChild(banner);
 				out.push(section);
+				slideSections.push(section);
 				continue;
 			}
 			applyBackground(section, slide);
@@ -55,10 +61,16 @@ export class HtmlRenderer {
 				if (markers) section.appendChild(markers);
 			}
 			out.push(section);
+			slideSections.push(section);
 			if (options.renderNotes) {
 				const notesEl = renderNotesBlock(slide, options.className, presentation, embedUrls);
 				if (notesEl) out.push(notesEl);
 			}
+		}
+
+		if (options.renderHandouts) {
+			const pages = renderHandoutPages(presentation, slideSections, options.className);
+			for (const p of pages) out.push(p);
 		}
 
 		return out;
