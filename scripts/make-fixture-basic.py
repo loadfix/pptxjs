@@ -196,6 +196,60 @@ _append_effect_lst(
     '<a:reflection blurRad="6350" stA="50000" stPos="0" endA="300" endPos="50000"'
     ' dist="38100" dir="5400000" sy="-100000" algn="bl" rotWithShape="0"/>',
 )
+# Slide exercising image crop / grayscale / brightness+contrast / alpha.
+# python-pptx has no high-level API for <a:srcRect>/<a:lum>/<a:alphaModFix>
+# etc., so we patch the <a:blipFill>/<a:blip> XML directly after each
+# picture is added.
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+
+def _a(name):
+    return f"{{{A_NS}}}{name}"
+
+def _sub(parent, tag, **attrs):
+    el = etree.SubElement(parent, _a(tag))
+    for k, v in attrs.items():
+        el.set(k, str(v))
+    return el
+
+def _blipfill(pic):
+    return pic.find(f"{{{P_NS}}}blipFill")
+
+def _blip(pic):
+    return _blipfill(pic).find(_a("blip"))
+
+img_adjust_slide = prs.slides.add_slide(prs.slide_layouts[5])
+img_adjust_slide.shapes.title.text = "Image adjustments"
+src_img = "/home/ben/code/python-pptx/tests/test_files/python-powered.png"
+
+# 1) Cropped: trim 20% left, 10% top, 20% right, 10% bottom.
+cropped = img_adjust_slide.shapes.add_picture(src_img, Inches(0.5), Inches(1.8), Inches(2.5), Inches(1.8))
+bf = _blipfill(cropped._element)
+# Insert <a:srcRect> as first child of <a:blipFill>, before <a:blip>.
+src_rect = etree.Element(_a("srcRect"), l="20000", t="10000", r="20000", b="10000")
+bf.insert(0, src_rect)
+
+# 2) Grayscale version of the same image.
+gray = img_adjust_slide.shapes.add_picture(src_img, Inches(3.3), Inches(1.8), Inches(2.5), Inches(1.8))
+_sub(_blip(gray._element), "grayscl")
+
+# 3) High-contrast + brightness boost (approx +20% bright, +30% contrast).
+contrasted = img_adjust_slide.shapes.add_picture(src_img, Inches(6.1), Inches(1.8), Inches(2.5), Inches(1.8))
+_sub(_blip(contrasted._element), "lum", bright="20000", contrast="30000")
+
+# 4) Alpha-reduced image (50% opacity).
+alpha = img_adjust_slide.shapes.add_picture(src_img, Inches(0.5), Inches(4.2), Inches(2.5), Inches(1.8))
+_sub(_blip(alpha._element), "alphaModFix", amt="50000")
+
+# 5) biLevel (threshold) — collapses toward black/white.
+bilevel = img_adjust_slide.shapes.add_picture(src_img, Inches(3.3), Inches(4.2), Inches(2.5), Inches(1.8))
+_sub(_blip(bilevel._element), "biLevel", thresh="50000")
+
+# 6) Duotone — map luminance to two colors (fallback to blend mode in renderer).
+duo = img_adjust_slide.shapes.add_picture(src_img, Inches(6.1), Inches(4.2), Inches(2.5), Inches(1.8))
+duotone_el = etree.SubElement(_blip(duo._element), _a("duotone"))
+_sub(duotone_el, "srgbClr", val="1F3A93")
+_sub(duotone_el, "srgbClr", val="FFD9B3")
 
 # Slide with a table.
 table_slide = prs.slides.add_slide(prs.slide_layouts[5])

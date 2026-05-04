@@ -14,7 +14,7 @@ import {
 	mergeRunStyle,
 	mergeParaStyle,
 } from './text-style';
-import { ThemeColors, ClrMap, resolveSchemeClr, resolveTypeface } from './theme';
+import { ThemeColors, ClrMap, resolveSchemeClr, resolveTypeface, resolveColorElement } from './theme';
 import { SolidFill, Fill, LineStyle, parseSolidFill, parseFillElement, parseLine } from './fill';
 import { ShapeEffects, parseEffectsFromSpPr } from './effects';
 import { applyMods } from './color-math';
@@ -162,6 +162,42 @@ export interface PicShape {
 	rotation60k: number;
 	flipH: boolean;
 	flipV: boolean;
+	// Source-rect crop from <a:srcRect>. Each value is in OOXML per-mille
+	// (0..100000) and expresses the fraction of the source image clipped from
+	// that edge. Missing attributes default to 0. Null means no crop.
+	srcRectPermille: SrcRect | null;
+	// <a:stretch> sets this true (the default when neither stretch nor tile
+	// is present); <a:tile> sets this false and populates `tile`.
+	stretch: boolean;
+	// <a:tile> metadata — scale/offset values in OOXML per-mille units. Null
+	// unless the blipFill explicitly used <a:tile>.
+	tile: TileInfo | null;
+	// Fixed-alpha override from <a:blip><a:alphaModFix amt="N"/>. N is in
+	// OOXML per-mille (0..100000). Null when absent.
+	alphaPermille: number | null;
+	// <a:lum bright="N" contrast="N"/>. Both in per-mille; can be negative.
+	lumBrightPermille: number | null;
+	lumContrastPermille: number | null;
+	// <a:grayscl/> presence flag.
+	grayscale: boolean;
+	// <a:biLevel thresh="N"/> — threshold in per-mille. Null when absent.
+	biLevelPermille: number | null;
+	// <a:duotone> with two color children — resolved hex colors.
+	duotone: [string, string] | null;
+}
+
+export interface SrcRect {
+	l: number;
+	t: number;
+	r: number;
+	b: number;
+}
+
+export interface TileInfo {
+	sxPermille: number;
+	syPermille: number;
+	txPermille: number;
+	tyPermille: number;
 }
 
 export interface Paragraph {
@@ -528,6 +564,84 @@ function parsePic(pic: Element, ctx: SlideParseContext): PicShape | null {
 	const rId = blip?.getAttributeNS(A_NS.r, "embed") ?? null;
 	const src = rId ? (ctx.embedUrls.get(rId) ?? null) : null;
 
+	// <a:srcRect l="" t="" r="" b=""/>. Missing attrs default to 0.
+	let srcRectPermille: SrcRect | null = null;
+	const srcRectEl = blipFill ? firstChildNS(blipFill, A_NS.a, "srcRect") : null;
+	if (srcRectEl) {
+		const l = Number(srcRectEl.getAttribute("l")) || 0;
+		const t = Number(srcRectEl.getAttribute("t")) || 0;
+		const r = Number(srcRectEl.getAttribute("r")) || 0;
+		const b = Number(srcRectEl.getAttribute("b")) || 0;
+		if (l !== 0 || t !== 0 || r !== 0 || b !== 0) {
+			srcRectPermille = { l, t, r, b };
+		}
+	}
+
+	// <a:stretch> vs <a:tile>. If neither, OOXML defaults to stretch.
+	const tileEl = blipFill ? firstChildNS(blipFill, A_NS.a, "tile") : null;
+	const stretchEl = blipFill ? firstChildNS(blipFill, A_NS.a, "stretch") : null;
+	const stretch = tileEl ? false : (stretchEl ? true : true);
+	let tile: TileInfo | null = null;
+	if (tileEl) {
+		tile = {
+			sxPermille: Number(tileEl.getAttribute("sx")) || 100000,
+			syPermille: Number(tileEl.getAttribute("sy")) || 100000,
+			txPermille: Number(tileEl.getAttribute("tx")) || 0,
+			tyPermille: Number(tileEl.getAttribute("ty")) || 0,
+		};
+	}
+
+	// Blip effect children.
+	let alphaPermille: number | null = null;
+	let lumBrightPermille: number | null = null;
+	let lumContrastPermille: number | null = null;
+	let grayscale = false;
+	let biLevelPermille: number | null = null;
+	let duotone: [string, string] | null = null;
+	if (blip) {
+		for (const child of Array.from(blip.children)) {
+			if (child.namespaceURI !== A_NS.a) continue;
+			switch (child.localName) {
+				case 'alphaModFix': {
+					const amt = child.getAttribute("amt");
+					// Per ECMA-376 the default when `amt` is omitted is 100000
+					// (fully opaque) — effectively a no-op, so only record when
+					// the element is materially constraining.
+					alphaPermille = amt !== null ? Number(amt) : 100000;
+					break;
+				}
+				case 'lum': {
+					const bright = child.getAttribute("bright");
+					const contrast = child.getAttribute("contrast");
+					if (bright !== null) lumBrightPermille = Number(bright);
+					if (contrast !== null) lumContrastPermille = Number(contrast);
+					// Presence alone (no attrs) is a no-op — skip.
+					break;
+				}
+				case 'grayscl':
+					grayscale = true;
+					break;
+				case 'biLevel': {
+					const thresh = child.getAttribute("thresh");
+					biLevelPermille = thresh !== null ? Number(thresh) : 50000;
+					break;
+				}
+				case 'duotone': {
+					const colorEls = Array.from(child.children).filter(
+						c => c.namespaceURI === A_NS.a,
+					);
+					const resolved = colorEls
+						.map(c => resolveColorElement(c, ctx.clrMap, ctx.theme))
+						.filter((r): r is NonNullable<typeof r> => !!r && !!r.colorHex);
+					if (resolved.length >= 2) {
+						duotone = [resolved[0].colorHex, resolved[1].colorHex];
+					}
+					break;
+				}
+			}
+		}
+	}
+
 	const nvPicPr = firstChildNS(pic, A_NS.p, "nvPicPr");
 	const nv = parseNonVisualProps(nvPicPr);
 	const alt = nv.descr ?? nv.name ?? "";
@@ -548,6 +662,15 @@ function parsePic(pic: Element, ctx: SlideParseContext): PicShape | null {
 		rotation60k: frame?.rotation60k ?? 0,
 		flipH: frame?.flipH ?? false,
 		flipV: frame?.flipV ?? false,
+		srcRectPermille,
+		stretch,
+		tile,
+		alphaPermille,
+		lumBrightPermille,
+		lumContrastPermille,
+		grayscale,
+		biLevelPermille,
+		duotone,
 	};
 }
 
