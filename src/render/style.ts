@@ -1,6 +1,8 @@
-export function makeStyleNode(cls: string, slideW: number, slideH: number): HTMLStyleElement {
+import { responsiveCss } from "./responsive";
+
+export function makeStyleNode(cls: string, slideW: number, slideH: number, responsive = false): HTMLStyleElement {
 	const style = document.createElement("style");
-	style.textContent = `
+	let css = `
 .${cls}-slide {
 	position: relative;
 	width: ${slideW}px;
@@ -97,5 +99,9 @@ export function makeStyleNode(cls: string, slideW: number, slideH: number): HTML
 	transform: translate(-50%, -50%);
 }
 `;
+	if (responsive) {
+		css += responsiveCss(cls, slideW);
+	}
+	style.textContent = css;
 	return style;
 }

@@ -6,6 +6,7 @@ import { applyBackground } from './background';
 import { renderShapeLike } from './dispatch';
 import { renderNotesBlock, renderCommentMarkers } from './notes';
 import { renderHandoutPages } from './handout';
+import { wrapResponsive } from './responsive';
 
 export class HtmlRenderer {
 	async render(presentation: Presentation, options: Options): Promise<Node[]> {
@@ -17,7 +18,7 @@ export class HtmlRenderer {
 
 		const slideW = emuToPx(presentation.slideSize.cx);
 		const slideH = emuToPx(presentation.slideSize.cy);
-		out.push(makeStyleNode(options.className, slideW, slideH));
+		out.push(makeStyleNode(options.className, slideW, slideH, options.responsive === true));
 
 		const embedUrls = presentation.embedUrls;
 		for (const slide of presentation.slides) {
@@ -55,8 +56,12 @@ export class HtmlRenderer {
 				banner.appendChild(document.createTextNode(" "));
 				banner.appendChild(document.createTextNode(slide.parseError));
 				section.appendChild(banner);
-				out.push(section);
 				slideSections.push(section);
+				if (options.responsive) {
+					out.push(wrapResponsive(section, options.className, slideW, slideH));
+				} else {
+					out.push(section);
+				}
 				continue;
 			}
 			applyBackground(section, slide);
@@ -69,8 +74,17 @@ export class HtmlRenderer {
 				const markers = renderCommentMarkers(slide, options.className);
 				if (markers) section.appendChild(markers);
 			}
-			out.push(section);
+			// Responsive mode: wrap each slide in a fluid container so the
+			// slide scales down on narrow viewports. The container reserves
+			// height via aspect-ratio; the <section> inside is transformed
+			// by attachResponsive after mount — pure CSS can't know the
+			// container width.
 			slideSections.push(section);
+			if (options.responsive) {
+				out.push(wrapResponsive(section, options.className, slideW, slideH));
+			} else {
+				out.push(section);
+			}
 			if (options.renderNotes) {
 				const notesEl = renderNotesBlock(slide, options.className, presentation, embedUrls);
 				if (notesEl) out.push(notesEl);
