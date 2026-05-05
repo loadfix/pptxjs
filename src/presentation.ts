@@ -1,6 +1,7 @@
 import type { Options } from './pptx-preview';
 import { OpenXmlPackage, resolveRelTarget } from './open-xml-package';
 import { imageMimeFromPath, isBrowserRenderableImage } from './mime';
+import { convertEmfOrWmfBlob, isEmfOrWmfMime } from './emf';
 import {
 	parseSlide,
 	parseStaticShapes,
@@ -338,7 +339,7 @@ export class Presentation {
 		// notesParsePrep stays null and per-slide notes loading is skipped —
 		// there's nothing sensible to inherit from, and the slide's own notes
 		// body won't resolve placeholder geometry without a master.
-		const notesParsePrep = await buildNotesParsePrep(pkg, pres.notesMaster, pres.embedUrls);
+		const notesParsePrep = await buildNotesParsePrep(pkg, pres.notesMaster, pres.embedUrls, options.convertEmf);
 
 		// Cache image URLs across slides — the same embedded image may be
 		// referenced by multiple slides via separate rIds, but there's one
@@ -361,8 +362,20 @@ export class Presentation {
 				if (!url) {
 					const blob = await pkg.loadBlob(mediaPath, mime);
 					if (blob) {
-						url = URL.createObjectURL(blob);
-						mediaUrlCache.set(mediaPath, url);
+						// EMF / WMF: run through the metafile converter so browsers
+						// can render the result. On conversion failure we skip the
+						// image entirely (leaves `<img src>` unset, which is safer
+						// than a broken native render that would expose `alt=`).
+						if (isEmfOrWmfMime(mime) && options.convertEmf) {
+							const dataUrl = await convertEmfOrWmfBlob(blob, mime);
+							if (dataUrl) {
+								url = dataUrl;
+								mediaUrlCache.set(mediaPath, url);
+							}
+						} else if (!isEmfOrWmfMime(mime)) {
+							url = URL.createObjectURL(blob);
+							mediaUrlCache.set(mediaPath, url);
+						}
 					}
 				}
 				if (url) urls.set(rel.id, url);
@@ -799,6 +812,7 @@ async function buildNotesParsePrep(
 	pkg: OpenXmlPackage,
 	notesMaster: NotesMasterBundle | null,
 	presEmbedUrls: Map<string, string>,
+	convertEmf: boolean,
 ): Promise<NotesParsePrep | null> {
 	if (!notesMaster || !notesMaster.doc || !notesMaster.path) return null;
 
@@ -818,7 +832,7 @@ async function buildNotesParsePrep(
 	// Embed URLs for the notesMaster itself (logos etc.). Registered into
 	// the presentation-wide map so any blip-fill rewrites in the static
 	// shapes resolve through the same cache as slide-level blips.
-	const masterEmbeds = await loadPartImageEmbeds(pkg, notesMaster.path);
+	const masterEmbeds = await loadPartImageEmbeds(pkg, notesMaster.path, convertEmf);
 
 	// The notes slide has no intervening "layout" — the cascade is
 	// notesSlide → notesMaster only. An empty layout placeholder map
@@ -846,16 +860,26 @@ async function buildNotesParsePrep(
 // blobs, and return the rId→URL map. Mirrors the inline `loadSlideEmbeds`
 // used in Presentation.load, but operates on an arbitrary part (master /
 // notesMaster / …) without depending on the per-slide mediaUrlCache.
-async function loadPartImageEmbeds(pkg: OpenXmlPackage, partPath: string): Promise<Map<string, string>> {
+async function loadPartImageEmbeds(pkg: OpenXmlPackage, partPath: string, convertEmf: boolean): Promise<Map<string, string>> {
 	const urls = new Map<string, string>();
 	const partRels = await pkg.loadRelationships(partPath);
 	for (const rel of partRels.values()) {
 		if (rel.type !== "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image") continue;
 		const mediaPath = resolveRelTarget(partPath, rel.target);
 		const mime = imageMimeFromPath(mediaPath);
-		if (!isBrowserRenderableImage(mime)) continue;
 		const blob = await pkg.loadBlob(mediaPath, mime);
-		if (blob) urls.set(rel.id, URL.createObjectURL(blob));
+		if (!blob) continue;
+		// Metafile conversion path: rasterise to PNG via `emf-converter`.
+		// On failure skip the image entirely rather than registering a
+		// broken blob URL the browser can't decode.
+		if (isEmfOrWmfMime(mime)) {
+			if (!convertEmf) continue;
+			const dataUrl = await convertEmfOrWmfBlob(blob, mime);
+			if (dataUrl) urls.set(rel.id, dataUrl);
+			continue;
+		}
+		if (!isBrowserRenderableImage(mime)) continue;
+		urls.set(rel.id, URL.createObjectURL(blob));
 	}
 	return urls;
 }

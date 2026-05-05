@@ -16,7 +16,13 @@ const umdOutput = {
 	file: 'dist/pptx-preview.js',
 	format: 'umd',
 	globals: {
-		jszip: 'JSZip'
+		jszip: 'JSZip',
+		// EMF / WMF conversion is optional — UMD consumers can load
+		// `emf-converter` via a second <script> tag to expose window.EMFConverter
+		// (or the adapter will silently skip metafile images). The base bundle
+		// intentionally does not pull this in because most decks don't carry
+		// any EMF/WMF and we don't want to inflate the baseline for them.
+		'emf-converter': 'EMFConverter'
 	},
 };
 
@@ -24,7 +30,7 @@ export default args => {
 	const config = {
 		input: 'src/pptx-preview.ts',
 		output: [umdOutput],
-		external: ['jszip'],
+		external: ['jszip', 'emf-converter'],
 		plugins: [typescript()]
 	}
 

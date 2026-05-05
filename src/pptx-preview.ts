@@ -7,6 +7,13 @@ import { attachResponsive } from './render/responsive';
 // their own section/ToC UI without reaching into the parser module.
 export type { Section, SlideSize } from './presentation-parser';
 
+// Re-export the EMF converter override hook so UMD consumers (which can't
+// rely on the bundler-driven dynamic import) can wire in a pre-loaded
+// `emf-converter` module. The ESM build's code-splitting dynamic import
+// path handles this automatically for bundled consumers; this escape hatch
+// exists purely for script-tag / sandbox environments.
+export { setEmfConverter } from './emf';
+
 // EMU per CSS pixel at 96 DPI — duplicated here so pptx-preview.ts can
 // compute the native slide width for attachResponsive without importing
 // all of render.
@@ -45,6 +52,13 @@ export interface Options {
 	// into the load promise. Defaults to undefined (parse errors are logged
 	// via console.warn only).
 	onSlideError?: (slideIndex: number, err: unknown) => void;
+	// When true (default), EMF / WMF images embedded in the deck are
+	// rasterised to PNG via `emf-converter` (lazy-loaded) and surfaced as
+	// normal `<img>` sources so brand logos and Illustrator-exported
+	// diagrams render. When false, EMF/WMF images are skipped — the image
+	// slot renders empty. Useful in environments that reject the extra
+	// bundle chunk or canvas dependency deterministically.
+	convertEmf: boolean;
 	/**
 	 * Responsive / mobile rendering. When `true`, each slide is wrapped in
 	 * a `<div class="pptx-slide-container">` that applies a CSS
@@ -70,6 +84,7 @@ export const defaultOptions: Options = {
 	renderComments: false,
 	renderHandouts: false,
 	onSlideError: undefined,
+	convertEmf: true,
 	responsive: false,
 };
 

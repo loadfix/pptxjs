@@ -1,6 +1,13 @@
 // Infer image MIME type from the file extension in the package path.
 // PPTX packages may also carry this in [Content_Types].xml, but extension
 // inference is sufficient for the common image formats.
+//
+// EMF / WMF are included here with their canonical Microsoft MIME strings
+// (`image/x-emf`, `image/x-wmf`) even though browsers can't render them
+// natively — the presentation loader runs an EMF/WMF → PNG conversion pass
+// (see `src/emf.ts`) and the MIME flag drives that dispatch. Without the
+// right MIME on the source Blob the converter can't tell EMF from WMF
+// (distinct record formats, distinct decoders).
 const IMAGE_MIME: Record<string, string> = {
 	png: "image/png",
 	jpg: "image/jpeg",
@@ -12,9 +19,9 @@ const IMAGE_MIME: Record<string, string> = {
 	tiff: "image/tiff",
 	tif: "image/tiff",
 	// EMF/WMF are not natively renderable in browsers. We still emit a
-	// MIME so `loadBlob` returns the bytes (hosts may want to handle them);
-	// `isBrowserRenderableImage` distinguishes these from the natively
-	// supported formats so the renderer can skip the <img> fallback.
+	// MIME so `loadBlob` returns the bytes; `isBrowserRenderableImage`
+	// distinguishes these from the natively supported formats, and the
+	// presentation loader runs them through `src/emf.ts`'s converter.
 	emf: "image/x-emf",
 	wmf: "image/x-wmf",
 };
