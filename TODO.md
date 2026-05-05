@@ -52,6 +52,55 @@ rendering gaps against the pptxjs fork at `c09111d`. Grouped below by
 root cause. Each bullet links to the result JSON on GitHub and ends
 with an actionable fix hypothesis.
 
+### Resolved in overnight wave 1 (branch `fix/w1-f-conformance-gaps-2026-05-04`)
+
+Addresses 10 of the 11 auto-filed entries via one parser extension +
+one renderer rewrite. The 11th (notes-slide hook) is deferred — see
+note below.
+
+- **Body placeholders emit `<ul>` / `<ol>` for bulleted runs.**
+  `html-renderer.ts:appendParagraphs` coalesces consecutive paragraphs
+  whose `bullet.kind` is `"char"` (→ `<ul>`) or `"autoNum"` (→ `<ol>`)
+  into a real list container carrying `data-bullet-type="bullet"` or
+  `"numbered"`. Each paragraph becomes one `<li>`; the per-paragraph
+  bullet glyph is suppressed inside a list so the `<li>` marker isn't
+  duplicated. Closes `bullet-list` and `bullet-numbered`.
+- **`data-placeholder-type` + `data-placeholder-idx` on shapes.**
+  `Shape` grew `phType` + `phIdx` fields captured from `<p:ph>`;
+  `renderShape` writes them to the wrapping `<div>` via
+  `el.dataset.placeholderType` / `.placeholderIdx`. Closes
+  `slide-title` and `slide-with-subtitle`.
+- **`data-kind="sp"` + `data-shape-type="textbox"` on shapes.**
+  `Shape` grew an `isTextBox` flag from `<p:nvSpPr><p:cNvSpPr txBox="1">`;
+  `renderShape` unconditionally stamps `data-kind="sp"` on every
+  shape root and adds `data-shape-type="textbox"` + a `pptx-textbox`
+  class when the flag is set. Closes `textbox-plain` and
+  `text-color`.
+- **`data-shape-preset` on preset geometries.** `Shape` grew a
+  `prstGeom` field captured from `<a:prstGeom prst="...">`;
+  `renderShape` writes it to `el.dataset.shapePreset` and adds a
+  `data-shape="line"` alias for `prstGeom === "line"`. Closes
+  `shape-line`, `shape-oval`, `shape-rectangle`.
+- **Chart graphic frames render with `data-kind="chart"` +
+  `data-chart-type`.** A new `ChartShape` kind is returned by
+  `parseGraphicFrame` when the `<a:graphicData>` URI ends in
+  `/chart`; the new `renderChart` emits a positioned `<div
+  class="pptx-chart" data-kind="chart">` (with `data-chart-type`
+  when we've resolved the kind). Closes `chart-column` with `chartType`
+  left null for now — a follow-up wave will parse the chart part and
+  fill in `columnClustered` / `pie` / etc.
+
+### Deferred to later wave
+
+- **Notes slides `.pptx-notes` hook.** Master has no notes-slide
+  rendering at all (`renderNotesBlock` referenced in the TODO entry
+  lives in the in-flight `feat/wave8-integrated` branch, not master).
+  The DOM-hook fix is part of the notes-rendering work and will land
+  together when that branch merges. Corpus entry:
+  [slide-notes](https://github.com/loadfix/ooxml-validate/blob/master/conformance/results/pptxjs/pptx/slide-notes.json).
+
+### Original entries (retained for reference)
+
 - **Body placeholders do not emit `<ul>` / `<ol>` for bulleted runs.**
   [bullet-list](https://github.com/loadfix/ooxml-validate/blob/master/conformance/results/pptxjs/pptx/bullet-list.json)
   and [bullet-numbered](https://github.com/loadfix/ooxml-validate/blob/master/conformance/results/pptxjs/pptx/bullet-numbered.json)
