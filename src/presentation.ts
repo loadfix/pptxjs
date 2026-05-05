@@ -31,6 +31,11 @@ import {
 	readChartModel,
 } from './graphic-frame';
 import {
+	parseDgmData,
+	parseDgmLayout,
+	renderMinimalSmartArt,
+} from './smartart-layout';
+import {
 	ThemeColors,
 	ClrMap,
 	emptyThemeColors,
@@ -53,6 +58,10 @@ const HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/200
 const SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
 const NOTES_MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster";
 const HANDOUT_MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/handoutMaster";
+// SmartArt layout definition part (diagrams/layout1.xml) — used by the
+// minimal fallback layout engine when the pre-rendered drawing cache is
+// absent.
+const DIAGRAM_LAYOUT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramLayout";
 
 // PresentationML 2010 extensions namespace. Sections (<p14:sectionLst>) are
 // PowerPoint 2010+ metadata carried under the standard <p:extLst> extension
@@ -676,6 +685,16 @@ async function resolveGraphicFrameFallbacks(
 						continue;
 					}
 				}
+				// No drawing cache — attempt the minimal layout engine. We
+				// need both diagrams/data1.xml (via the slide's dataRId rel)
+				// and diagrams/layout1.xml (via the data part's own rels).
+				// If the layout algorithm is one we don't handle we skip
+				// this path and fall through to the [SmartArt] placeholder.
+				const expanded = await tryMinimalSmartArtLayout(pkg, slidePath, slideRels, s, ctx);
+				if (expanded && expanded.length > 0) {
+					out.push(...expanded);
+					continue;
+				}
 			}
 			out.push(s);
 			continue;
@@ -683,6 +702,57 @@ async function resolveGraphicFrameFallbacks(
 		out.push(s);
 	}
 	return out;
+}
+
+// Minimal SmartArt layout fallback: invoked when the pre-rendered
+// `diagrams/drawingN.xml` cache is missing. Resolves both the data and
+// layout parts, classifies the layout algorithm, and — when it's one of
+// the handled templates (hList / vList / hierarchy) — synthesises a
+// shape list at the frame origin. Returns null to mean "caller should
+// keep the [SmartArt] placeholder". The synthesised shapes are already
+// offset by the frame's x/y so the caller can `out.push(...)` directly.
+async function tryMinimalSmartArtLayout(
+	pkg: OpenXmlPackage,
+	slidePath: string,
+	slideRels: Map<string, import('./open-xml-package').Relationship>,
+	frame: import('./graphic-frame').SmartArtFallbackShape,
+	ctx: SlideParseContext,
+): Promise<ShapeLike[] | null> {
+	if (!frame.dataRId) return null;
+	const dataRel = slideRels.get(frame.dataRId);
+	if (!dataRel) return null;
+	const dataPath = resolveRelTarget(slidePath, dataRel.target);
+	// The diagramLayout rel lives on the data part's own _rels, not on
+	// the slide (though some writers duplicate it on the slide too).
+	const dataRels = await pkg.loadRelationships(dataPath);
+	let layoutPath: string | null = null;
+	for (const r of dataRels.values()) {
+		if (r.type === DIAGRAM_LAYOUT_REL_TYPE) {
+			layoutPath = resolveRelTarget(dataPath, r.target);
+			break;
+		}
+	}
+	if (!layoutPath) {
+		for (const r of slideRels.values()) {
+			if (r.type === DIAGRAM_LAYOUT_REL_TYPE) {
+				layoutPath = resolveRelTarget(slidePath, r.target);
+				break;
+			}
+		}
+	}
+	if (!layoutPath) return null;
+
+	const [{ root }, { algorithm }] = await Promise.all([
+		parseDgmData(pkg, dataPath),
+		parseDgmLayout(pkg, layoutPath),
+	]);
+	if (!root || algorithm === 'unknown') return null;
+	const shapes = renderMinimalSmartArt(root, algorithm, frame.cx, frame.cy, ctx.theme);
+	for (const sh of shapes) {
+		sh.x += frame.x;
+		sh.y += frame.y;
+	}
+	return shapes;
 }
 
 // Walk <p:extLst> looking for the sectionLst extension and extract the
