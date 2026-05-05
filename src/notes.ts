@@ -1,23 +1,39 @@
 import { A_NS } from './namespaces';
+import { imageMimeFromPath } from './mime';
 import { OpenXmlPackage, resolveRelTarget } from './open-xml-package';
-import { firstChildNS, childrenNS } from './xml-utils';
+import { parseSlide, ShapeLike, SlideParseContext } from './presentation-parser';
 
 const NOTES_REL_TYPE =
 	"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide";
+const IMAGE_REL_TYPE =
+	"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 
 export interface NotesSlide {
-	// Concatenated speaker-notes text from the body placeholder. Paragraphs
-	// are joined with "\n"; runs within a paragraph are concatenated with no
-	// separator. Rich-text rendering (bullets, fonts, hyperlinks) is a
-	// follow-up — the notesSlide part shares the same text model as a regular
-	// slide, but for now we surface only the plain string.
-	text: string;
+	// The parsed notes-slide shapes. Structurally identical to Slide.shapes —
+	// the notesSlide part carries the same <p:cSld><p:spTree> content as a
+	// regular slide, just under a <p:notes> root. Prepended with the
+	// notesMaster's static chrome (header/footer/date/slide-number/slide-image
+	// placeholders) so the notes page renders like a full sub-slide.
+	shapes: ShapeLike[];
+	// Images embedded directly on this notes slide (rare but possible).
+	// Keyed by the synthetic `${partPath}#${rId}` id used by BlipFill after
+	// rewriting — merged into the Presentation's global embedUrls by the
+	// loader so shape renderers can look them up.
+	embedUrls: Map<string, string>;
 }
 
-// Locate this slide's notesSlide part via its rels and pull out the body
-// text. Returns null when the slide has no speaker notes (either no rel
-// entry or an empty body placeholder).
-export async function loadNotesSlide(pkg: OpenXmlPackage, slidePath: string): Promise<NotesSlide | null> {
+// Load a slide's associated notesSlide part and return the parsed shapes.
+// `notesCtx` is the SlideParseContext built from the notesMaster (or the
+// slide master as a fallback); it carries theme/clrMap/placeholders so
+// parseSlide can resolve inherited geometry and text styling. The caller
+// is responsible for merging `embedUrls` into the presentation-wide map
+// and rewriting blip rIds to their synthetic keys.
+export async function loadNotesSlide(
+	pkg: OpenXmlPackage,
+	slidePath: string,
+	notesCtx: SlideParseContext,
+	notesStaticShapes: ShapeLike[],
+): Promise<{ notes: NotesSlide; notesPath: string } | null> {
 	const rels = await pkg.loadRelationships(slidePath);
 	let notesPath: string | null = null;
 	for (const r of rels.values()) {
@@ -31,49 +47,40 @@ export async function loadNotesSlide(pkg: OpenXmlPackage, slidePath: string): Pr
 	const doc = await pkg.loadXml(notesPath);
 	if (!doc) return null;
 
-	// Find <p:sp> whose <p:ph type="body"> (or no explicit type, defaulting
-	// to body per ECMA-376) lives under <p:spTree>.
-	const cSld = firstChildNS(doc.documentElement, A_NS.p, "cSld");
-	const spTree = cSld ? firstChildNS(cSld, A_NS.p, "spTree") : null;
-	if (!spTree) return null;
+	// Resolve the notes slide's own image rels. Rare — most notes slides
+	// carry only placeholders — but parseSlide/parsePic still need the map
+	// to resolve <a:blip r:embed="..."> references. Cache blobs per URL in
+	// the same way the main pipeline does.
+	const embedUrls = await loadNotesEmbeds(pkg, notesPath);
 
-	let bodySp: Element | null = null;
-	for (const sp of childrenNS(spTree, A_NS.p, "sp")) {
-		const nvSpPr = firstChildNS(sp, A_NS.p, "nvSpPr");
-		const nvPr = nvSpPr ? firstChildNS(nvSpPr, A_NS.p, "nvPr") : null;
-		const ph = nvPr ? firstChildNS(nvPr, A_NS.p, "ph") : null;
-		if (!ph) continue;
-		const phType = ph.getAttribute("type");
-		// body placeholders either carry type="body" or omit type entirely.
-		if (phType === "body" || phType === null) {
-			bodySp = sp;
-			break;
-		}
+	// Parse with the notesMaster-derived context, but swap in this notes
+	// slide's own embed map so any images on the notes part resolve.
+	const localCtx: SlideParseContext = { ...notesCtx, embedUrls };
+	// parseSlide only looks at `doc.documentElement`'s <p:cSld> child, so
+	// it transparently handles both <p:sld> and <p:notes> roots.
+	const parsed = parseSlide(doc, 0, localCtx);
+
+	// Prepend the notesMaster chrome. Static shapes (e.g. the sldImg preview
+	// border, the notesMaster's footer background) belong under the notes
+	// slide's own content, same cascade as for a regular slide → layout →
+	// master. The handoutMaster layer is skipped — notes slides don't cascade
+	// through a layout.
+	const shapes: ShapeLike[] = [...notesStaticShapes, ...parsed.shapes];
+
+	return {
+		notes: { shapes, embedUrls },
+		notesPath,
+	};
+}
+
+async function loadNotesEmbeds(pkg: OpenXmlPackage, notesPath: string): Promise<Map<string, string>> {
+	const urls = new Map<string, string>();
+	const rels = await pkg.loadRelationships(notesPath);
+	for (const rel of rels.values()) {
+		if (rel.type !== IMAGE_REL_TYPE) continue;
+		const mediaPath = resolveRelTarget(notesPath, rel.target);
+		const blob = await pkg.loadBlob(mediaPath, imageMimeFromPath(mediaPath));
+		if (blob) urls.set(rel.id, URL.createObjectURL(blob));
 	}
-	if (!bodySp) return null;
-
-	const txBody = firstChildNS(bodySp, A_NS.p, "txBody");
-	if (!txBody) return null;
-
-	const paraTexts: string[] = [];
-	for (const p of childrenNS(txBody, A_NS.a, "p")) {
-		let line = "";
-		for (const child of Array.from(p.children)) {
-			if (child.namespaceURI !== A_NS.a) continue;
-			if (child.localName === "r") {
-				const t = firstChildNS(child, A_NS.a, "t");
-				if (t) line += t.textContent ?? "";
-			} else if (child.localName === "br") {
-				line += "\n";
-			} else if (child.localName === "fld") {
-				const t = firstChildNS(child, A_NS.a, "t");
-				if (t) line += t.textContent ?? "";
-			}
-		}
-		paraTexts.push(line);
-	}
-
-	const text = paraTexts.join("\n");
-	if (!text) return null;
-	return { text };
+	return urls;
 }

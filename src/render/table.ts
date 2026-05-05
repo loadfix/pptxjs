@@ -351,6 +351,16 @@ export function renderCell(
 	// native <td> border property, so we overlay them as absolutely-
 	// positioned SVG inside the cell. pointer-events: none lets clicks
 	// still reach the cell content.
+	//
+	// Merged cells (Wave 6 A4): when a diagonal is declared on a cell
+	// with gridSpan>1 or rowSpan>1, this approach Just Works — setting
+	// colSpan/rowSpan on the <td> stretches the cell's own box across
+	// the full merged rect, and the SVG's viewBox="0 0 100 100" +
+	// preserveAspectRatio="none" scales the line to fill that box. The
+	// (0,0)→(100,100) / (0,100)→(100,0) endpoints therefore land on the
+	// corners of the merged rectangle, not the original single cell.
+	// Continuation cells (hMerge/vMerge) are skipped in renderTable
+	// above so only the spanning cell renders a diagonal.
 	const tlbrLine = cellBorders.tlbr ?? bandBorders?.tlbr ?? null;
 	const blTrLine = cellBorders.blTr ?? bandBorders?.blTr ?? null;
 	if (tlbrLine || blTrLine) td.style.position = 'relative';
