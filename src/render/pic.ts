@@ -3,6 +3,7 @@ import { positionStyle, transformStyle, SVG_NS } from './geom';
 import { wrapInHyperlink } from './hyperlink';
 import {
 	applyCropOverlay,
+	applyTileMetrics,
 	createInlineFilter,
 	nextSvgFilterId,
 	supportsSvgFilters,
@@ -25,11 +26,14 @@ export function renderPic(pic: PicShape, cls: string, hyperlinkUrls: Map<string,
 
 	if (!pic.stretch) {
 		// Tile fill — render as a repeating background on the container.
+		// Precise tile sizing/offset requires the source image's natural px
+		// dimensions, which we can only learn asynchronously; `applyTileMetrics`
+		// patches backgroundSize/Position in place after an Image() probe.
 		wrap.style.backgroundImage = `url(${cssUrl(pic.src)})`;
 		wrap.style.backgroundRepeat = "repeat";
 		wrap.style.backgroundSize = "auto";
 		if (pic.tile) {
-			wrap.style.backgroundPosition = `${pic.tile.txPermille / 1000}% ${pic.tile.tyPermille / 1000}%`;
+			applyTileMetrics(wrap, pic.src, pic.tile);
 		}
 		// Build filters *against the tile wrapper* so any inline <svg> filter
 		// defs land alongside the background div.
