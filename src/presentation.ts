@@ -435,10 +435,12 @@ export class Presentation {
 		// its own master chain. The caches below are keyed by part path, so
 		// distinct masters produce distinct MasterBundles.
 		//
-		// Caveat: `pres.tableStyles` remains global because the tableStyles
-		// part (ppt/tableStyles.xml) is declared at the presentation level,
-		// not per-master. Decks that somehow rely on per-master table style
-		// variation are not supported — all tables share the same style table.
+		// Note: `pres.tableStyles` is deliberately a single presentation-wide
+		// map. Per ECMA-376 Part 1 §14.2.9, the `tableStyles` relationship
+		// type is defined only on the PresentationML Presentation part — the
+		// SlideMaster content type has no equivalent relationship, so "per-
+		// master tableStyles" isn't a feature of OOXML. All tables in a deck
+		// share one tableStyles.xml by spec.
 		for (let i = 0; i < slidePaths.length; i++) {
 			const path = slidePaths[i];
 			// Per-slide isolation: any failure in parse / background / hyperlinks
