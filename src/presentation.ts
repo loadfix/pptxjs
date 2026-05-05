@@ -13,6 +13,7 @@ import {
 	emptyMasterTextStyles,
 	parseMasterTextStyles,
 	extractHfPlaceholderText,
+	emptyHeaderFooterFlags,
 	PlaceholderMap,
 	MasterTextStyles,
 	SlideParseContext,
@@ -30,8 +31,9 @@ import {
 	emptyClrMap,
 	parseTheme,
 	parseClrMap,
+	parseClrMapOvr,
 } from './theme';
-import { parseSlideBackground } from './background';
+import { parseSlideBackground, ParsedSlideBackground, BackgroundFill } from './background';
 import { loadTableStyles, TableStyle } from './table-style';
 import { loadNotesSlide } from './notes';
 import { loadCommentAuthors, loadComments } from './comments';
@@ -74,6 +76,10 @@ interface MasterBundle {
 interface LayoutBundle {
 	placeholders: PlaceholderMap;
 	doc: Document | null;
+	// <p:clrMapOvr><a:overrideClrMapping .../></p:clrMapOvr> on the layout,
+	// or null when the layout inherits the master's map (either because the
+	// element is absent or because it holds <a:masterClrMapping/>).
+	clrMapOvr: ClrMap | null;
 }
 
 export class Presentation {
@@ -154,7 +160,7 @@ export class Presentation {
 				path: null,
 				doc: null,
 			};
-			const emptyLayout: LayoutBundle = { placeholders: emptyPlaceholderMap(), doc: null };
+			const emptyLayout: LayoutBundle = { placeholders: emptyPlaceholderMap(), doc: null, clrMapOvr: null };
 
 			const slideRels = await pkg.loadRelationships(slidePath);
 			let layoutPath: string | null = null;
@@ -172,6 +178,7 @@ export class Presentation {
 				layoutBundle = {
 					placeholders: layoutDoc ? buildPlaceholderMap(layoutDoc) : emptyPlaceholderMap(),
 					doc: layoutDoc,
+					clrMapOvr: layoutDoc ? parseClrMapOvr(layoutDoc) : null,
 				};
 				layoutCache.set(layoutPath, layoutBundle);
 
@@ -296,84 +303,169 @@ export class Presentation {
 			return out;
 		}
 
+		// Presentation.load walks each slide's layout → master independently
+		// (no assumption of a single shared master), so multi-master decks
+		// render correctly: every slide pulls the theme/clrMap/textStyles of
+		// its own master chain. The caches below are keyed by part path, so
+		// distinct masters produce distinct MasterBundles.
+		//
+		// Caveat: `pres.tableStyles` remains global because the tableStyles
+		// part (ppt/tableStyles.xml) is declared at the presentation level,
+		// not per-master. Decks that somehow rely on per-master table style
+		// variation are not supported — all tables share the same style table.
 		for (let i = 0; i < slidePaths.length; i++) {
 			const path = slidePaths[i];
-			const doc = await pkg.loadXml(path);
-			if (!doc) continue;
-			const { layout, master, layoutPath, masterPath } = await getLayoutAndMaster(path);
+			// Per-slide isolation: any failure in parse / background / hyperlinks
+			// / fallbacks / notes / comments is trapped here so one bad slide
+			// doesn't poison the rest of the deck. The slide still takes its
+			// slot in `pres.slides` (indices stay stable) but carries a
+			// parseError string that the renderer surfaces as a red banner.
+			try {
+				const doc = await pkg.loadXml(path);
+				// A slide referenced from `presentation.xml` whose part is
+				// absent (or whose text can't be decoded) raises this — it
+				// counts as a parse failure for the purpose of keeping slide
+				// indices stable.
+				if (!doc) throw new Error(`slide part missing: ${path}`);
+				const { layout, master, layoutPath, masterPath } = await getLayoutAndMaster(path);
 
-			// Shared parse context (clrMap/theme/etc.) that also needs the
-			// correct embedUrls for whichever part is being parsed.
-			const baseCtx = {
-				layout: layout.placeholders,
-				master: master.placeholders,
-				masterTextStyles: master.textStyles,
-				theme: master.theme,
-				clrMap: master.clrMap,
-			};
+				// Effective clrMap cascade: slide.clrMapOvr ?? layout.clrMapOvr ??
+				// master.clrMap. Scheme-color lookups inside this slide's content
+				// use this map; master/layout chrome uses its own effective map
+				// (layout = layout.clrMapOvr ?? master; master = master.clrMap).
+				const slideClrMapOvr = parseClrMapOvr(doc);
+				const effectiveClrMap: ClrMap = slideClrMapOvr ?? layout.clrMapOvr ?? master.clrMap;
+				const layoutClrMap: ClrMap = layout.clrMapOvr ?? master.clrMap;
 
-			// Static chrome from master → layout, parsed with their own embeds
-			// so images stored at the master/layout level resolve.
-			const staticShapes: ReturnType<typeof parseStaticShapes> = [];
-			if (master.doc && masterPath) {
-				const masterEmbeds = await embedsFor(masterPath);
-				const shapes = parseStaticShapes(master.doc, { ...baseCtx, embedUrls: masterEmbeds });
-				rewriteBlipRIds(shapes, masterEmbeds, masterPath, pres.embedUrls);
-				staticShapes.push(...shapes);
+				// Shared parse context (clrMap/theme/etc.) that also needs the
+				// correct embedUrls for whichever part is being parsed.
+				const baseCtx = {
+					layout: layout.placeholders,
+					master: master.placeholders,
+					masterTextStyles: master.textStyles,
+					theme: master.theme,
+					clrMap: effectiveClrMap,
+				};
+
+				// Static chrome from master → layout, parsed with their own embeds
+				// so images stored at the master/layout level resolve. Each level
+				// parses with the clrMap that applies to it, not the slide's.
+				const staticShapes: ReturnType<typeof parseStaticShapes> = [];
+				if (master.doc && masterPath) {
+					const masterEmbeds = await embedsFor(masterPath);
+					const shapes = parseStaticShapes(master.doc, {
+						...baseCtx, embedUrls: masterEmbeds, clrMap: master.clrMap,
+					});
+					rewriteBlipRIds(shapes, masterEmbeds, masterPath, pres.embedUrls);
+					staticShapes.push(...shapes);
+				}
+				if (layout.doc && layoutPath) {
+					const layoutEmbeds = await embedsFor(layoutPath);
+					const shapes = parseStaticShapes(layout.doc, {
+						...baseCtx, embedUrls: layoutEmbeds, clrMap: layoutClrMap,
+					});
+					rewriteBlipRIds(shapes, layoutEmbeds, layoutPath, pres.embedUrls);
+					staticShapes.push(...shapes);
+				}
+
+				const slideEmbeds = await embedsFor(path);
+				const slideCtx: SlideParseContext = { ...baseCtx, embedUrls: slideEmbeds };
+				const slide = parseSlide(doc, i, slideCtx);
+				rewriteBlipRIds(slide.shapes, slideEmbeds, path, pres.embedUrls);
+
+				// Resolve chart / SmartArt fallback shapes now that we have
+				// access to the package and the slide's rels.
+				const slideRels = await pkg.loadRelationships(path);
+				slide.shapes = await resolveGraphicFrameFallbacks(
+					pkg, path, slideRels, slide.shapes, slideCtx, mediaUrlCache,
+				);
+
+				// Footer/header/datetime text cascade: slide → layout. If the slide
+				// doesn't carry the text in its own placeholder, pull it from the
+				// layout's corresponding placeholder. Layout placeholders are parsed
+				// as part of `staticShapes`.
+				if (slide.footerText === null || slide.headerText === null || slide.datetimeText === null) {
+					const layoutHfText = extractHfPlaceholderText(staticShapes as ShapeLike[]);
+					if (slide.footerText === null) slide.footerText = layoutHfText.ftr;
+					if (slide.headerText === null) slide.headerText = layoutHfText.hdr;
+					if (slide.datetimeText === null) slide.datetimeText = layoutHfText.dt;
+				}
+
+				// Prepend static chrome so slide content renders on top.
+				slide.shapes = [...staticShapes, ...slide.shapes];
+
+				// Resolve hyperlink rels for this slide (external URLs + intra-deck
+				// jumps). Must be attached after parseSlide since parseSlide returns
+				// a fresh empty map.
+				slide.hyperlinkUrls = await loadSlideHyperlinks(path, i);
+
+				// Background cascade: slide → layout → master. First concrete hit
+				// wins. parseSlideBackground returns 'inherit' when a part carries
+				// an explicit <p:bgRef idx=0|1000/> (ECMA-376: "no fill / show
+				// through") — that's an intentional declaration meaning "defer to
+				// the next level up", distinct from "no <p:bg> declared" (null).
+				// Both null and 'inherit' fall through to the next cascade level.
+				slide.background = resolveBackgroundCascade(
+					parseSlideBackground(doc, effectiveClrMap, master.theme),
+					layout.doc ? parseSlideBackground(layout.doc, layoutClrMap, master.theme) : null,
+					master.doc ? parseSlideBackground(master.doc, master.clrMap, master.theme) : null,
+				);
+
+				// Notes + comments — pulled from the slide's own rels. Both are
+				// optional parts; loaders return null / [] when absent.
+				slide.notes = await loadNotesSlide(pkg, path);
+				slide.comments = await loadComments(pkg, path, commentAuthors);
+				pres.slides.push(slide);
+			} catch (err) {
+				if (typeof console !== "undefined") console.warn(`[pptxjs] slide ${i} failed to parse:`, err);
+				if (options.onSlideError) {
+					try { options.onSlideError(i, err); }
+					catch (cbErr) {
+						if (typeof console !== "undefined") console.warn(`[pptxjs] onSlideError callback threw:`, cbErr);
+					}
+				}
+				pres.slides.push(makeErrorSlide(i, err));
 			}
-			if (layout.doc && layoutPath) {
-				const layoutEmbeds = await embedsFor(layoutPath);
-				const shapes = parseStaticShapes(layout.doc, { ...baseCtx, embedUrls: layoutEmbeds });
-				rewriteBlipRIds(shapes, layoutEmbeds, layoutPath, pres.embedUrls);
-				staticShapes.push(...shapes);
-			}
-
-			const slideEmbeds = await embedsFor(path);
-			const slideCtx: SlideParseContext = { ...baseCtx, embedUrls: slideEmbeds };
-			const slide = parseSlide(doc, i, slideCtx);
-			rewriteBlipRIds(slide.shapes, slideEmbeds, path, pres.embedUrls);
-
-			// Resolve chart / SmartArt fallback shapes now that we have
-			// access to the package and the slide's rels.
-			const slideRels = await pkg.loadRelationships(path);
-			slide.shapes = await resolveGraphicFrameFallbacks(
-				pkg, path, slideRels, slide.shapes, slideCtx, mediaUrlCache,
-			);
-
-			// Footer/header/datetime text cascade: slide → layout. If the slide
-			// doesn't carry the text in its own placeholder, pull it from the
-			// layout's corresponding placeholder. Layout placeholders are parsed
-			// as part of `staticShapes`.
-			if (slide.footerText === null || slide.headerText === null || slide.datetimeText === null) {
-				const layoutHfText = extractHfPlaceholderText(staticShapes as ShapeLike[]);
-				if (slide.footerText === null) slide.footerText = layoutHfText.ftr;
-				if (slide.headerText === null) slide.headerText = layoutHfText.hdr;
-				if (slide.datetimeText === null) slide.datetimeText = layoutHfText.dt;
-			}
-
-			// Prepend static chrome so slide content renders on top.
-			slide.shapes = [...staticShapes, ...slide.shapes];
-
-			// Resolve hyperlink rels for this slide (external URLs + intra-deck
-			// jumps). Must be attached after parseSlide since parseSlide returns
-			// a fresh empty map.
-			slide.hyperlinkUrls = await loadSlideHyperlinks(path, i);
-
-			// Background cascade: slide → layout → master. First hit wins.
-			slide.background =
-				parseSlideBackground(doc, master.clrMap, master.theme)
-				?? (layout.doc ? parseSlideBackground(layout.doc, master.clrMap, master.theme) : null)
-				?? (master.doc ? parseSlideBackground(master.doc, master.clrMap, master.theme) : null);
-
-			// Notes + comments — pulled from the slide's own rels. Both are
-			// optional parts; loaders return null / [] when absent.
-			slide.notes = await loadNotesSlide(pkg, path);
-			slide.comments = await loadComments(pkg, path, commentAuthors);
-			pres.slides.push(slide);
 		}
 
 		return pres;
 	}
+}
+
+// Reduce the slide → layout → master background cascade down to a concrete
+// fill or null. Each input is the result of parseSlideBackground for that
+// level: a BackgroundFill (stop here), 'inherit' (explicit skip — look at
+// the next level), or null (level said nothing — also look at the next).
+function resolveBackgroundCascade(
+	slide: ParsedSlideBackground,
+	layout: ParsedSlideBackground,
+	master: ParsedSlideBackground,
+): BackgroundFill | null {
+	for (const level of [slide, layout, master]) {
+		if (level && level !== 'inherit') return level;
+	}
+	return null;
+}
+
+// Build a minimal placeholder slide for a slide that failed to parse. The
+// slide still occupies its index in pres.slides so intra-deck `#slide-N`
+// anchors stay correct; the renderer checks `parseError` and emits a red
+// banner inside an otherwise empty section.
+function makeErrorSlide(index: number, err: unknown): Slide {
+	const msg = err instanceof Error ? err.message : String(err);
+	return {
+		index,
+		shapes: [],
+		background: null,
+		hyperlinkUrls: new Map(),
+		hf: emptyHeaderFooterFlags(),
+		footerText: null,
+		headerText: null,
+		datetimeText: null,
+		notes: null,
+		comments: [],
+		parseError: msg,
+	};
 }
 
 // Walk the parsed shapes from a single part (slide/layout/master) and, for

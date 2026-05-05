@@ -54,6 +54,20 @@ renderPresentation(
 ): Promise<Node[]>
 ```
 
+### Options
+
+Public fields of `Options` (all optional via `Partial<Options>`):
+
+- `className: string` — CSS class prefix on rendered elements. Defaults to `"pptx"`.
+- `inWrapper: boolean` — wrap output in a container div. Defaults to `true`.
+- `debug: boolean` — enables extra logging. Defaults to `false`.
+- `trimXmlDeclaration: boolean` — strip `<?xml ... ?>` before parsing. Defaults to `true`.
+- `useBase64URL: boolean` — emit images as data URLs instead of `blob:` URLs. Defaults to `false`.
+- `showHidden: boolean` — include slides marked `<p:sldId show="0">`. Defaults to `false`.
+- `renderNotes: boolean` — append a `.pptx-notes` block beneath each slide. Defaults to `false`.
+- `renderComments: boolean` — render comment pins as absolutely-positioned markers. Defaults to `false`.
+- `onSlideError?: (slideIndex: number, err: unknown) => void` — called when a slide fails to parse. The slide still occupies its index in `presentation.slides` with `parseError` set and renders as a red error banner; this hook just lets hosts log / telemeter the failure.
+
 ## Status
 
 Early scaffolding. The public surface (`renderAsync`, `parseAsync`, `renderPresentation`) is in place but may still change in shape as the parser and renderer fill in. Treat the API as unstable for now.

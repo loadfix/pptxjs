@@ -16,11 +16,22 @@ export interface FieldContext {
 	firstSlideNum: number;
 }
 
+// Body-level modifiers threaded from the enclosing shape's <a:bodyPr> through
+// paragraph / run rendering. Both values come from <a:normAutofit>:
+//   fontScale      — per-mille; 75000 → 0.75 multiplier on every run size.
+//   lnSpcReduction — per-mille; 20000 → subtract 20% from every paragraph's
+//                    effective line-height.
+export interface BodyTextContext {
+	fontScale: number | null;
+	lnSpcReduction: number | null;
+}
+
 export function renderParagraph(
 	p: Paragraph,
 	autoNumState: AutoNumState,
 	hyperlinkUrls: Map<string, string>,
 	fieldCtx?: FieldContext,
+	bodyCtx?: BodyTextContext,
 ): HTMLElement {
 	const el = document.createElement("p");
 	el.style.margin = "0";
@@ -41,15 +52,26 @@ export function renderParagraph(
 	else if (align === "just") el.style.textAlign = "justify";
 
 	// Line spacing — percent maps to unitless line-height; points stays in pt.
+	// normAutofit lnSpcReduction (per-mille) trims a percentage off whichever
+	// line-height was chosen. When no explicit lineSpacing is set but a
+	// reduction applies, treat the baseline as 100% so the reduction still
+	// takes effect.
 	const ls = p.style.lineSpacing;
+	const lnReduction = bodyCtx?.lnSpcReduction;
 	if (ls) {
 		if (ls.kind === 'pct') {
 			// pct is per-mille (e.g. 150000 = 150% = line-height: 1.5).
-			el.style.lineHeight = `${ls.value / 100000}`;
+			const base = ls.value / 100000;
+			const trimmed = lnReduction != null ? base * (1 - lnReduction / 100000) : base;
+			el.style.lineHeight = `${trimmed}`;
 		} else {
 			// pts is in hundredths-of-a-point (spcPts val="2400" = 24pt).
-			el.style.lineHeight = `${ls.value / 100}pt`;
+			const basePt = ls.value / 100;
+			const trimmedPt = lnReduction != null ? basePt * (1 - lnReduction / 100000) : basePt;
+			el.style.lineHeight = `${trimmedPt}pt`;
 		}
+	} else if (lnReduction != null) {
+		el.style.lineHeight = `${1 - lnReduction / 100000}`;
 	}
 	const sb = p.style.spaceBefore;
 	if (sb) {
@@ -91,7 +113,7 @@ export function renderParagraph(
 	}
 
 	for (const run of p.runs) {
-		el.appendChild(renderRun(run, hyperlinkUrls, fieldCtx));
+		el.appendChild(renderRun(run, hyperlinkUrls, fieldCtx, bodyCtx));
 	}
 	return el;
 }
@@ -138,7 +160,12 @@ export function toRoman(n: number): string {
 	return out || "I";
 }
 
-export function renderRun(run: Run, hyperlinkUrls: Map<string, string>, fieldCtx?: FieldContext): HTMLElement {
+export function renderRun(
+	run: Run,
+	hyperlinkUrls: Map<string, string>,
+	fieldCtx?: FieldContext,
+	bodyCtx?: BodyTextContext,
+): HTMLElement {
 	// Wave 2 — render BreakRun as <br>, FieldRun via field substitution.
 	if (run.kind === 'break') {
 		return document.createElement("br");
@@ -151,13 +178,13 @@ export function renderRun(run: Run, hyperlinkUrls: Map<string, string>, fieldCtx
 		const resolved = resolveField(run.fieldType, run.fallbackText, fieldCtx);
 		el.textContent = resolved;
 		el.setAttribute("data-pptx-field", run.fieldType);
-		applyRunStyle(el, run.style);
+		applyRunStyle(el, run.style, bodyCtx);
 		return wrapInHyperlink(el, run.style.hyperlinkRId, hyperlinkUrls);
 	}
 	// kind === 'text'
 	const el = document.createElement("span");
 	el.textContent = run.text;
-	applyRunStyle(el, run.style);
+	applyRunStyle(el, run.style, bodyCtx);
 	return wrapInHyperlink(el, run.style.hyperlinkRId, hyperlinkUrls);
 }
 
@@ -217,10 +244,15 @@ export function formatDatetimeField(variant: string, fallbackText: string): stri
 	}
 }
 
-function applyRunStyle(el: HTMLElement, s: TextRun['style']): void {
+function applyRunStyle(el: HTMLElement, s: TextRun['style'], bodyCtx?: BodyTextContext): void {
 	if (s.bold) el.style.fontWeight = "bold";
 	if (s.italic) el.style.fontStyle = "italic";
-	if (s.sizeHundredths != null) el.style.fontSize = `${s.sizeHundredths / 100}pt`;
+	if (s.sizeHundredths != null) {
+		// normAutofit fontScale (per-mille) shrinks every run uniformly so the
+		// text fits its frame. 75000 → 0.75× base size.
+		const scale = bodyCtx?.fontScale != null ? bodyCtx.fontScale / 100000 : 1;
+		el.style.fontSize = `${(s.sizeHundredths / 100) * scale}pt`;
+	}
 
 	// Color + alpha. If alpha is set, fold it into an rgba() value; otherwise
 	// emit the plain hex color.

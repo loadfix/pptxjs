@@ -6,8 +6,15 @@
 //   <p:bgRef>    — theme reference by fmtScheme index (not resolved here)
 //
 // Only solidFill is resolved — either via direct <a:srgbClr> or via
-// <a:schemeClr> through the slide's clrMap + theme. gradFill/blipFill/
-// bgRef are parsed-through but return null.
+// <a:schemeClr> through the slide's clrMap + theme. gradFill/blipFill are
+// parsed-through but return null.
+//
+// Tri-state return: `null` means "this part did not declare a background,
+// look at the next level of the cascade"; `'inherit'` means "this part
+// declared an explicit inherit marker (<p:bgRef idx=0|1000/>) — the
+// declaration is intentional and equivalent to 'use whatever the next
+// level supplies'"; a BackgroundFill means the part resolved to a concrete
+// fill that the cascade should stop at.
 
 import { A_NS } from './namespaces';
 import { firstChildNS } from './xml-utils';
@@ -20,11 +27,13 @@ export interface BackgroundFill {
 	colorHex: string;
 }
 
+export type ParsedSlideBackground = BackgroundFill | 'inherit' | null;
+
 export function parseSlideBackground(
 	slideDoc: Document,
 	clrMap: ClrMap,
 	theme: ThemeColors,
-): BackgroundFill | null {
+): ParsedSlideBackground {
 	const cSld = firstChildNS(slideDoc.documentElement, A_NS.p, "cSld");
 	const bg = firstChildNS(cSld, A_NS.p, "bg");
 	if (!bg) return null;
@@ -35,7 +44,14 @@ export function parseSlideBackground(
 	}
 
 	const bgRef = firstChildNS(bg, A_NS.p, "bgRef");
-	if (bgRef) return resolveBgRef(bgRef, clrMap, theme);
+	if (bgRef) {
+		const idxAttr = bgRef.getAttribute("idx");
+		const idx = idxAttr != null ? Number(idxAttr) : NaN;
+		// idx 0 and 1000 mean "no fill, show through" — on a slide/layout
+		// that's an explicit "inherit from the next level", not "no bg".
+		if (Number.isFinite(idx) && idx < 1001) return 'inherit';
+		return resolveBgRef(bgRef, clrMap, theme);
+	}
 
 	return null;
 }

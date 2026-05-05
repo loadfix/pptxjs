@@ -115,6 +115,30 @@ export function parseClrMap(masterDoc: Document): ClrMap {
 	return out;
 }
 
+// Parse <p:clrMapOvr> from a slide (<p:sld>) or slide layout (<p:sldLayout>) doc.
+//
+//   <p:clrMapOvr>
+//     <a:masterClrMapping/>               → inherit the master's clrMap
+//     <a:overrideClrMapping bg1="lt1" …/> → explicit per-part map
+//   </p:clrMapOvr>
+//
+// Returns null to signal "inherit from the next level up". A present
+// <a:overrideClrMapping> returns a freshly parsed ClrMap parallel to
+// parseClrMap. Absence of <p:clrMapOvr> also returns null (same inherit
+// behaviour as <a:masterClrMapping/>).
+export function parseClrMapOvr(doc: Document): ClrMap | null {
+	const root = doc.documentElement;
+	const clrMapOvr = firstChildNS(root, A_NS.p, "clrMapOvr");
+	if (!clrMapOvr) return null;
+	const override = firstChildNS(clrMapOvr, A_NS.a, "overrideClrMapping");
+	if (!override) return null; // <a:masterClrMapping/> or empty → inherit
+	const out = emptyClrMap();
+	for (const attr of Array.from(override.attributes)) {
+		out[attr.localName ?? attr.name] = attr.value;
+	}
+	return out;
+}
+
 // Resolve a <a:schemeClr val="..."/> to `#RRGGBB`, or null if it can't be
 // resolved.
 export function resolveSchemeClr(slot: string, clrMap: ClrMap, theme: ThemeColors): string | null {

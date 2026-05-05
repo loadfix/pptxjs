@@ -7,12 +7,14 @@ import {
 	RunStyle,
 	ParaStyle,
 	LevelStyles,
+	BodyProperties,
 	emptyRunStyle,
 	emptyParaStyle,
 	emptyLevelStyles,
 	parseRunProps,
 	parseParaProps,
 	parseLevelStyles,
+	parseBodyPr,
 	mergeRunStyle,
 	mergeParaStyle,
 } from './text-style';
@@ -52,6 +54,11 @@ export interface Slide {
 	// Review comments on this slide. Always an array — empty when the slide
 	// has no comments part.
 	comments: import('./comments').Comment[];
+	// When the slide could not be parsed, this carries the error's message so
+	// the renderer can emit a visible error banner in place of the slide
+	// contents. Null on healthy slides. Populated by Presentation.load when
+	// parseSlide (or any of the per-slide resolution steps) throws.
+	parseError: string | null;
 }
 
 export interface HeaderFooterFlags {
@@ -226,12 +233,19 @@ export interface Shape {
 	// Consumed by the renderer so it can skip sldNum/ftr/hdr/dt placeholders
 	// when the slide's <p:hf> flag disables them.
 	phType: string | null;
+	// Parsed <a:bodyPr> from <p:txBody>. Null when the shape has no text body
+	// or the element was absent. Drives text-frame insets, vertical anchor,
+	// wrap, column count, writing-mode, and autofit scaling.
+	bodyPr: BodyProperties | null;
 }
 
-// Minimal <a:custGeom> representation — a single path with the local
-// coordinate dimensions (`w`/`h`) used by its inner point coords. Only
-// straight-line commands are captured; curves/arcs fall back to straight
-// segments through their endpoints.
+// Minimal <a:custGeom> representation — a concatenation of every
+// <a:path> inside <a:pathLst>, each as a subpath in the resulting SVG `d`
+// string. The local coordinate dimensions (`pathW` / `pathH`) come from
+// the first path's `w` / `h` attributes (PowerPoint rarely mixes sizes
+// across paths in a single custGeom, so we pick the first and use that
+// as the viewBox). `closed` is true when at least one subpath ended
+// with <a:close>.
 export interface CustGeom {
 	pathW: number;
 	pathH: number;
@@ -240,6 +254,11 @@ export interface CustGeom {
 	// inside an SVG viewBox matching those dimensions.
 	d: string;
 	closed: boolean;
+	// <a:path fill="…"> — 'none' (no fill), 'norm' (use shape fill),
+	// 'darken' / 'lighten' (modify shape fill, currently treated as norm).
+	// Taken from the first subpath; multi-path shapes that mix fill modes
+	// are rare and not fully round-tripped here.
+	fillMode: 'none' | 'norm' | 'darken' | 'lighten';
 }
 
 export interface PicShape {
@@ -451,6 +470,7 @@ export function parseSlide(doc: Document, index: number, ctx: SlideParseContext)
 		datetimeText: phText.dt,
 		notes: null,
 		comments: [],
+		parseError: null,
 	};
 }
 
@@ -509,20 +529,27 @@ export function parseStaticShapes(doc: Document, ctx: SlideParseContext): ShapeL
 function walkSpTreeStatic(container: Element, out: ShapeLike[], ctx: SlideParseContext, t: Transform = IDENTITY): void {
 	for (const child of Array.from(container.children)) {
 		if (child.namespaceURI !== A_NS.p) continue;
-		if (child.localName === "sp" || child.localName === "cxnSp") {
-			if (isPlaceholder(child)) continue;
-			const s = parseShape(child, ctx);
-			if (s) { applyTransform(s, t); out.push(s); }
-		} else if (child.localName === "pic") {
-			if (isPlaceholder(child)) continue;
-			const p = parsePic(child, ctx);
-			if (p) { applyTransform(p, t); out.push(p); }
-		} else if (child.localName === "grpSp") {
-			const grpT = composeTransforms(t, transformFromGrpSp(child));
-			walkSpTreeStatic(child, out, ctx, grpT);
-		} else if (child.localName === "graphicFrame") {
-			const gfShape = parseGraphicFrame(child, ctx);
-			if (gfShape) { applyTransform(gfShape, t); out.push(gfShape); }
+		// Per-shape isolation: one mangled shape shouldn't abort parsing of
+		// its siblings. Drop the shape + warn; grpSp failures drop the whole
+		// group (but not surrounding shapes).
+		try {
+			if (child.localName === "sp" || child.localName === "cxnSp") {
+				if (isPlaceholder(child)) continue;
+				const s = parseShape(child, ctx);
+				if (s) { applyTransform(s, t); out.push(s); }
+			} else if (child.localName === "pic") {
+				if (isPlaceholder(child)) continue;
+				const p = parsePic(child, ctx);
+				if (p) { applyTransform(p, t); out.push(p); }
+			} else if (child.localName === "grpSp") {
+				const grpT = composeTransforms(t, transformFromGrpSp(child));
+				walkSpTreeStatic(child, out, ctx, grpT);
+			} else if (child.localName === "graphicFrame") {
+				const gfShape = parseGraphicFrame(child, ctx);
+				if (gfShape) { applyTransform(gfShape, t); out.push(gfShape); }
+			}
+		} catch (err) {
+			if (typeof console !== "undefined") console.warn(`[pptxjs] shape <${child.localName}> failed to parse, dropping:`, err);
 		}
 	}
 }
@@ -602,25 +629,32 @@ function applyTransform(shape: ShapeLike, t: Transform): void {
 function walkSpTree(container: Element, out: ShapeLike[], ctx: SlideParseContext, t: Transform = IDENTITY): void {
 	for (const child of Array.from(container.children)) {
 		if (child.namespaceURI !== A_NS.p) continue;
-		if (child.localName === "sp") {
-			const s = parseShape(child, ctx);
-			if (s) { applyTransform(s, t); out.push(s); }
-		} else if (child.localName === "pic") {
-			const p = parsePic(child, ctx);
-			if (p) { applyTransform(p, t); out.push(p); }
-		} else if (child.localName === "grpSp") {
-			// Nested group — compose the group's own transform with the
-			// accumulated one before recursing into children.
-			const grpT = composeTransforms(t, transformFromGrpSp(child));
-			walkSpTree(child, out, ctx, grpT);
-		} else if (child.localName === "graphicFrame") {
-			const gfShape = parseGraphicFrame(child, ctx);
-			if (gfShape) { applyTransform(gfShape, t); out.push(gfShape); }
-		} else if (child.localName === "cxnSp") {
-			// Connector shapes — lines, arrows, etc. We reuse parseShape but
-			// cxnSp has no <a:txBody> and typically renders as a line.
-			const s = parseShape(child, ctx);
-			if (s) { applyTransform(s, t); out.push(s); }
+		// Per-shape isolation: one mangled shape shouldn't abort parsing of
+		// its siblings. Drop the shape + warn; grpSp failures drop the whole
+		// group (but not surrounding shapes).
+		try {
+			if (child.localName === "sp") {
+				const s = parseShape(child, ctx);
+				if (s) { applyTransform(s, t); out.push(s); }
+			} else if (child.localName === "pic") {
+				const p = parsePic(child, ctx);
+				if (p) { applyTransform(p, t); out.push(p); }
+			} else if (child.localName === "grpSp") {
+				// Nested group — compose the group's own transform with the
+				// accumulated one before recursing into children.
+				const grpT = composeTransforms(t, transformFromGrpSp(child));
+				walkSpTree(child, out, ctx, grpT);
+			} else if (child.localName === "graphicFrame") {
+				const gfShape = parseGraphicFrame(child, ctx);
+				if (gfShape) { applyTransform(gfShape, t); out.push(gfShape); }
+			} else if (child.localName === "cxnSp") {
+				// Connector shapes — lines, arrows, etc. We reuse parseShape but
+				// cxnSp has no <a:txBody> and typically renders as a line.
+				const s = parseShape(child, ctx);
+				if (s) { applyTransform(s, t); out.push(s); }
+			}
+		} catch (err) {
+			if (typeof console !== "undefined") console.warn(`[pptxjs] shape <${child.localName}> failed to parse, dropping:`, err);
 		}
 	}
 }
@@ -974,6 +1008,7 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 	const txBody = firstChildNS(sp, A_NS.p, "txBody");
 	const shapeLstStyle = txBody ? firstChildNS(txBody, A_NS.a, "lstStyle") : null;
 	const shapeLevelStyles = parseLevelStyles(shapeLstStyle, ctx.clrMap, ctx.theme);
+	const bodyPr = txBody ? parseBodyPr(firstChildNS(txBody, A_NS.a, "bodyPr")) : null;
 
 	const paragraphs: Paragraph[] = [];
 	if (txBody) {
@@ -1028,6 +1063,7 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 		flipH: frame?.flipH ?? false,
 		flipV: frame?.flipV ?? false,
 		phType,
+		bodyPr,
 	};
 }
 
@@ -1035,49 +1071,110 @@ function parseCustGeom(custGeom: Element | null): CustGeom | null {
 	if (!custGeom) return null;
 	const pathLst = firstChildNS(custGeom, A_NS.a, "pathLst");
 	if (!pathLst) return null;
-	const path = firstChildNS(pathLst, A_NS.a, "path");
-	if (!path) return null;
-	const pathW = Number(path.getAttribute("w")) || 0;
-	const pathH = Number(path.getAttribute("h")) || 0;
-	if (pathW === 0 && pathH === 0) return null;
+	const paths = childrenNS(pathLst, A_NS.a, "path");
+	if (paths.length === 0) return null;
 
+	const firstW = Number(paths[0].getAttribute("w")) || 0;
+	const firstH = Number(paths[0].getAttribute("h")) || 0;
+	if (firstW === 0 && firstH === 0) return null;
+
+	let firstFillMode: 'none' | 'norm' | 'darken' | 'lighten' = 'norm';
+	let anyClosed = false;
 	let d = "";
-	let closed = false;
 	const readPt = (pt: Element) => ({
 		x: Number(pt.getAttribute("x")) || 0,
 		y: Number(pt.getAttribute("y")) || 0,
 	});
-	for (const cmd of Array.from(path.children)) {
-		if (cmd.namespaceURI !== A_NS.a) continue;
-		if (cmd.localName === "moveTo") {
-			const pt = firstChildNS(cmd, A_NS.a, "pt");
-			if (pt) { const p = readPt(pt); d += `M ${p.x} ${p.y} `; }
-		} else if (cmd.localName === "lnTo") {
-			const pt = firstChildNS(cmd, A_NS.a, "pt");
-			if (pt) { const p = readPt(pt); d += `L ${p.x} ${p.y} `; }
-		} else if (cmd.localName === "cubicBezTo") {
-			// Three <a:pt> children: two control points + end.
-			const pts = Array.from(cmd.children)
-				.filter(c => c.namespaceURI === A_NS.a && c.localName === "pt")
-				.map(readPt);
-			if (pts.length >= 3) {
-				d += `C ${pts[0].x} ${pts[0].y} ${pts[1].x} ${pts[1].y} ${pts[2].x} ${pts[2].y} `;
+
+	for (let pi = 0; pi < paths.length; pi++) {
+		const path = paths[pi];
+		const fillAttr = path.getAttribute("fill");
+		if (pi === 0) {
+			if (fillAttr === 'none' || fillAttr === 'norm' || fillAttr === 'darken' || fillAttr === 'lighten') {
+				firstFillMode = fillAttr;
 			}
-		} else if (cmd.localName === "quadBezTo") {
-			const pts = Array.from(cmd.children)
-				.filter(c => c.namespaceURI === A_NS.a && c.localName === "pt")
-				.map(readPt);
-			if (pts.length >= 2) {
-				d += `Q ${pts[0].x} ${pts[0].y} ${pts[1].x} ${pts[1].y} `;
-			}
-		} else if (cmd.localName === "close") {
-			d += "Z ";
-			closed = true;
 		}
-		// arcTo is skipped — correct SVG conversion is non-trivial and rare in practice.
+		// Track pen position so arcTo (OOXML's relative-to-current-point
+		// elliptical arc) can derive its start point.
+		let cur: { x: number; y: number } | null = null;
+		for (const cmd of Array.from(path.children)) {
+			if (cmd.namespaceURI !== A_NS.a) continue;
+			if (cmd.localName === "moveTo") {
+				const pt = firstChildNS(cmd, A_NS.a, "pt");
+				if (pt) { const p = readPt(pt); d += `M ${p.x} ${p.y} `; cur = p; }
+			} else if (cmd.localName === "lnTo") {
+				const pt = firstChildNS(cmd, A_NS.a, "pt");
+				if (pt) { const p = readPt(pt); d += `L ${p.x} ${p.y} `; cur = p; }
+			} else if (cmd.localName === "cubicBezTo") {
+				// Three <a:pt> children: two control points + end.
+				const pts = Array.from(cmd.children)
+					.filter(c => c.namespaceURI === A_NS.a && c.localName === "pt")
+					.map(readPt);
+				if (pts.length >= 3) {
+					d += `C ${pts[0].x} ${pts[0].y} ${pts[1].x} ${pts[1].y} ${pts[2].x} ${pts[2].y} `;
+					cur = pts[2];
+				}
+			} else if (cmd.localName === "quadBezTo") {
+				const pts = Array.from(cmd.children)
+					.filter(c => c.namespaceURI === A_NS.a && c.localName === "pt")
+					.map(readPt);
+				if (pts.length >= 2) {
+					d += `Q ${pts[0].x} ${pts[0].y} ${pts[1].x} ${pts[1].y} `;
+					cur = pts[1];
+				}
+			} else if (cmd.localName === "arcTo") {
+				const seg = arcToSvg(cmd, cur);
+				if (seg) {
+					d += seg.d;
+					cur = seg.end;
+				}
+			} else if (cmd.localName === "close") {
+				d += "Z ";
+				anyClosed = true;
+			}
+		}
 	}
 	if (!d) return null;
-	return { pathW, pathH, d: d.trim(), closed };
+	return { pathW: firstW, pathH: firstH, d: d.trim(), closed: anyClosed, fillMode: firstFillMode };
+}
+
+// Convert <a:arcTo wR hR stAng swAng/> to an SVG elliptical arc command.
+//
+// OOXML arcTo semantics (ECMA-376 §20.1.9.3):
+//   - `wR` / `hR` are the ellipse radii in path-local units.
+//   - `stAng` / `swAng` are angles in 60000ths of a degree; 0° points east
+//     (3 o'clock) and positive angles sweep clockwise — the same sign
+//     convention SVG uses in screen space, where y grows downward.
+//   - The arc's centre is derived from the current pen position:
+//     (cx, cy) = (curX - wR*cos(stAng), curY - hR*sin(stAng)).
+//   - The endpoint is (cx + wR*cos(stAng+swAng), cy + hR*sin(stAng+swAng)).
+//
+// SVG's `A rx ry x-axis-rot large-arc-flag sweep-flag x y` then needs
+// `large-arc-flag = |swAng| > 180°` and `sweep-flag = swAng > 0` (CW).
+// When there's no current pen position we assume (0, 0) — the OOXML
+// schema in practice always precedes arcTo with a moveTo.
+function arcToSvg(cmd: Element, cur: { x: number; y: number } | null): { d: string; end: { x: number; y: number } } | null {
+	const wR = Number(cmd.getAttribute("wR")) || 0;
+	const hR = Number(cmd.getAttribute("hR")) || 0;
+	const stAng60k = Number(cmd.getAttribute("stAng")) || 0;
+	const swAng60k = Number(cmd.getAttribute("swAng")) || 0;
+	if (wR === 0 || hR === 0) return null;
+	const toRad = (a60k: number) => (a60k / 60000) * Math.PI / 180;
+	const stA = toRad(stAng60k);
+	const enA = toRad(stAng60k + swAng60k);
+	const curX = cur?.x ?? 0;
+	const curY = cur?.y ?? 0;
+	const cx = curX - wR * Math.cos(stA);
+	const cy = curY - hR * Math.sin(stA);
+	const endX = cx + wR * Math.cos(enA);
+	const endY = cy + hR * Math.sin(enA);
+	const absSwDeg = Math.abs(swAng60k / 60000);
+	const largeArc = absSwDeg > 180 ? 1 : 0;
+	const sweep = swAng60k > 0 ? 1 : 0;
+	return {
+		d: `A ${wR} ${hR} 0 ${largeArc} ${sweep} ${endX} ${endY} `,
+		end: { x: endX, y: endY },
+	};
 }
 
 // Parse <a:prstGeom prst="…"> with its optional <a:avLst> of adjust values.
