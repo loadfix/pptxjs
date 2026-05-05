@@ -26,6 +26,7 @@ import {
 	findChartFallbackImage,
 	findSmartArtDrawingDoc,
 	parseSmartArtShapesFromDoc,
+	readChartType,
 } from './graphic-frame';
 import {
 	ThemeColors,
@@ -632,6 +633,7 @@ async function resolveGraphicFrameFallbacks(
 				if (rel && rel.type === CHART_REL_TYPE) {
 					const chartPath = resolveRelTarget(slidePath, rel.target);
 					s.src = await findChartFallbackImage(pkg, chartPath, mediaUrlCache);
+					s.chartType = await readChartType(pkg, chartPath);
 				}
 			}
 			out.push(s);

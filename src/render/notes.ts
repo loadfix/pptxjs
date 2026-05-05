@@ -21,7 +21,11 @@ export function renderNotesBlock(
 ): HTMLElement | null {
 	if (!slide.notes) return null;
 	const section = document.createElement("section");
-	section.className = `${cls}-notes-slide`;
+	// `pptx-notes` is a stable hook the ooxml-validate corpus asserts on
+	// (slide-notes case); `${cls}-notes-slide` retains the deck-scoped class
+	// so the shared stylesheet's chrome rules still match.
+	section.className = `${cls}-notes-slide pptx-notes`;
+	section.dataset.notes = "true";
 	section.dataset.slideIndex = String(slide.index);
 	// Inline size — the style block declares the box chrome (border, margins)
 	// but each deck's notesSz may differ, so width/height are set per-element.

@@ -32,6 +32,8 @@ export const URI_DIAGRAM = "http://schemas.openxmlformats.org/drawingml/2006/dia
 // Namespace URIs for the SmartArt drawing cache (dsp) and p-main.
 const DSP_NS = "http://schemas.microsoft.com/office/drawing/2008/diagram";
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
+// DrawingML chart namespace, used to probe chart type from chartN.xml.
+const C_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 
 export interface ChartFallbackShape {
 	kind: 'chart-fallback';
@@ -44,6 +46,10 @@ export interface ChartFallbackShape {
 	chartRId: string | null;
 	// Filled in by the post-parse resolver. Null if no cached image found.
 	src: string | null;
+	// Resolved chart-type label probed from ppt/charts/chartN.xml's first
+	// plot-area series element (e.g. "columnClustered", "line", "pie"). Null
+	// when the chart part can't be found or the element is unrecognised.
+	chartType: string | null;
 	name: string | null;
 	title: string | null;
 	alt: string | null;
@@ -95,6 +101,114 @@ export async function findChartFallbackImage(
 		if (url) return url;
 	}
 	return null;
+}
+
+// Probe the chart part (ppt/charts/chartN.xml) for its first plot-area
+// series element and translate it into a chart-type label suitable for
+// `data-chart-type="..."`.
+//
+// The element set is fixed by ECMA-376 — one of barChart, bar3DChart,
+// lineChart, line3DChart, pieChart, pie3DChart, doughnutChart, areaChart,
+// area3DChart, scatterChart, radarChart, bubbleChart, stockChart,
+// surfaceChart, surface3DChart, ofPieChart. For bar/area/line we combine
+// with the grouping attribute to emit PowerPoint's conventional labels
+// ("columnClustered", "barStacked", "lineStacked100", etc.). Returns null
+// when the chart part is missing or holds something we don't recognise.
+export async function readChartType(
+	pkg: OpenXmlPackage,
+	chartPartPath: string,
+): Promise<string | null> {
+	const doc = await pkg.loadXml(chartPartPath);
+	if (!doc) return null;
+	// Walk <c:chartSpace> → <c:chart> → <c:plotArea>, then take the first
+	// element in the chart-type enumeration.
+	const root = doc.documentElement;
+	if (!root || root.namespaceURI !== C_NS || root.localName !== "chartSpace") return null;
+	const chart = firstChildNS(root, C_NS, "chart");
+	if (!chart) return null;
+	const plotArea = firstChildNS(chart, C_NS, "plotArea");
+	if (!plotArea) return null;
+	for (const child of Array.from(plotArea.children)) {
+		if (child.namespaceURI !== C_NS) continue;
+		const mapped = mapChartTypeElement(child);
+		if (mapped) return mapped;
+	}
+	return null;
+}
+
+function firstChildNS(parent: Element, ns: string, localName: string): Element | null {
+	for (const c of Array.from(parent.children)) {
+		if (c.namespaceURI === ns && c.localName === localName) return c;
+	}
+	return null;
+}
+
+// Map a `<c:*Chart>` element to a chart-type string. Grouping is folded
+// into the label for bar/line/area variants following PowerPoint's
+// "columnClustered" / "lineStacked100" convention.
+function mapChartTypeElement(el: Element): string | null {
+	const local = el.localName;
+	switch (local) {
+		case "barChart":
+			return barLabel(el, /* threeD */ false);
+		case "bar3DChart":
+			return barLabel(el, /* threeD */ true);
+		case "lineChart":
+			return groupingLabel(el, "line");
+		case "line3DChart":
+			return groupingLabel(el, "line3D");
+		case "pieChart":
+			return "pie";
+		case "pie3DChart":
+			return "pie3D";
+		case "doughnutChart":
+			return "doughnut";
+		case "areaChart":
+			return groupingLabel(el, "area");
+		case "area3DChart":
+			return groupingLabel(el, "area3D");
+		case "scatterChart":
+			return "scatter";
+		case "radarChart":
+			return "radar";
+		case "bubbleChart":
+			return "bubble";
+		case "stockChart":
+			return "stock";
+		case "surfaceChart":
+			return "surface";
+		case "surface3DChart":
+			return "surface3D";
+		case "ofPieChart":
+			return "ofPie";
+		default:
+			return null;
+	}
+}
+
+function barLabel(el: Element, threeD: boolean): string {
+	// <c:barDir val="col"|"bar"> decides column vs bar; fall back to "bar"
+	// if the attribute is missing (ECMA default is "bar").
+	const barDir = firstChildNS(el, C_NS, "barDir");
+	const dir = barDir?.getAttribute("val") ?? "bar";
+	const base = dir === "col" ? (threeD ? "column3D" : "column") : (threeD ? "bar3D" : "bar");
+	return groupingLabel(el, base);
+}
+
+function groupingLabel(el: Element, base: string): string {
+	const grouping = firstChildNS(el, C_NS, "grouping");
+	const val = grouping?.getAttribute("val");
+	switch (val) {
+		case "clustered":
+			return `${base}Clustered`;
+		case "stacked":
+			return `${base}Stacked`;
+		case "percentStacked":
+			return `${base}Stacked100`;
+		case "standard":
+		default:
+			return base;
+	}
 }
 
 // Locate and parse the SmartArt drawing cache (diagrams/drawingN.xml).

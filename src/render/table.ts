@@ -2,7 +2,7 @@ import type { TableShape, TableCell, TableCellBorders } from '../presentation-pa
 import type { TableStyle, TableBandStyle, TableBorders } from '../table-style';
 import type { LineStyle, Fill } from '../fill';
 import { emuToPx, positionStyle, transformStyle } from './geom';
-import { renderParagraph, type AutoNumState, type FieldContext } from './text';
+import { renderParagraphs, type AutoNumState, type FieldContext } from './text';
 import { solidColorFromFill } from './fill-utils';
 
 // DrawingML <a:prstDash> values → CSS border-style. "solid" is the default
@@ -239,6 +239,9 @@ export function renderTable(
 	Object.assign(wrap.style, positionStyle(t.x, t.y, t.cx, t.cy));
 	Object.assign(wrap.style, transformStyle(t.rotation60k, t.flipH, t.flipV));
 
+	// Stable data-* hook for the conformance harness / DOM introspection.
+	wrap.setAttribute("data-kind", "table");
+
 	const table = document.createElement("table");
 	Object.assign(table.style, {
 		width: "100%",
@@ -374,8 +377,8 @@ export function renderCell(
 	}
 
 	const autoNumState: AutoNumState = new Map();
-	for (const p of cell.paragraphs) {
-		td.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx, undefined, embedUrls));
+	for (const node of renderParagraphs(cell.paragraphs, autoNumState, hyperlinkUrls, fieldCtx, undefined, embedUrls)) {
+		td.appendChild(node);
 	}
 	return td;
 }

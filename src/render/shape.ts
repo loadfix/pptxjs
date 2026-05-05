@@ -3,7 +3,7 @@ import type { BodyProperties } from '../text-style';
 import type { ShapeEffects, OuterShadow, InnerShadow, Glow, SoftEdge, Reflection, Blur } from '../effects';
 import type { LineStyle, LineEnd } from '../fill';
 import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
-import { renderParagraph, type AutoNumState, type BodyTextContext, type FieldContext } from './text';
+import { renderParagraphs, type AutoNumState, type BodyTextContext, type FieldContext } from './text';
 import {
 	approxSolidColorFromFill,
 	fillToCssBackground,
@@ -32,6 +32,37 @@ const DEFAULT_B_INS_EMU = 45720;
 // shapes on the same document don't collide on `url(#head-foo)`.
 let markerIdCounter = 0;
 
+// Emit data-* attributes that the conformance harness and downstream DOM
+// introspection consumers rely on. Writing these in one place keeps them
+// consistent across render paths (custGeom / presetGeom / plain box /
+// degenerate line).
+//
+// - data-kind:             the shape's discriminator (always "sp" here).
+// - data-placeholder-type: normalized <p:ph type>, when present.
+// - data-placeholder-idx:  <p:ph idx>, when a placeholder is attached.
+// - data-shape-type:       "textbox" when <p:cNvSpPr txBox="1"/>.
+// - data-shape-preset:     <a:prstGeom prst>, when a preset is set.
+// - data-shape:            "line" alias for line-like presets (so selectors
+//                          like [data-shape='line'] can match connectors
+//                          drawn as straightConnector1 too).
+function applyShapeDataAttrs(el: HTMLElement, shape: Shape): void {
+	el.setAttribute("data-kind", "sp");
+	if (shape.phType) {
+		el.setAttribute("data-placeholder-type", shape.phType);
+		if (shape.phIdx != null) el.setAttribute("data-placeholder-idx", shape.phIdx);
+	}
+	if (shape.isTextBox) {
+		el.setAttribute("data-shape-type", "textbox");
+	}
+	const preset = shape.presetGeom?.name;
+	if (preset) {
+		el.setAttribute("data-shape-preset", preset);
+		if (preset === "line" || preset === "straightConnector1") {
+			el.setAttribute("data-shape", "line");
+		}
+	}
+}
+
 export function renderShape(
 	shape: Shape,
 	cls: string,
@@ -43,6 +74,10 @@ export function renderShape(
 	el.className = `${cls}-shape`;
 	Object.assign(el.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
 	Object.assign(el.style, transformStyle(shape.rotation60k, shape.flipH, shape.flipV));
+
+	// Stable data-* hooks for the conformance harness and DOM introspection.
+	// These are purely descriptive; they never gate rendering behaviour.
+	applyShapeDataAttrs(el, shape);
 
 	// Accessibility: prefer `title` (human-authored title text) for aria-label;
 	// fall back to `alt` (from <p:cNvPr descr=>). Skip entirely when neither is
@@ -194,8 +229,8 @@ function renderTextBody(
 	}
 
 	const autoNumState: AutoNumState = new Map();
-	for (const p of shape.paragraphs) {
-		wrap.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls));
+	for (const node of renderParagraphs(shape.paragraphs, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls)) {
+		wrap.appendChild(node);
 	}
 	return wrap;
 }
