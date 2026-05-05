@@ -88,6 +88,22 @@ export function renderShape(
 		el.setAttribute("role", "figure");
 	}
 
+	// Placeholder-type driven heading semantics. Title placeholders are
+	// the top-level heading per slide (aria-level=1); subTitle shapes
+	// serve as the sub-heading (aria-level=2). Non-title placeholder
+	// roles (body/ftr/etc.) keep their default div semantics so AT
+	// doesn't hear "heading" on every bullet. This ARIA role wins over
+	// role="figure" from the descr branch above — title-with-descr is
+	// rare and the heading outline is the more valuable signal for a
+	// slide deck.
+	if (shape.phType === "title") {
+		el.setAttribute("role", "heading");
+		el.setAttribute("aria-level", "1");
+	} else if (shape.phType === "subTitle") {
+		el.setAttribute("role", "heading");
+		el.setAttribute("aria-level", "2");
+	}
+
 	// A degenerate "line" (zero cx or cy) can't render a path in zero area,
 	// so fall back to the background-band treatment even if custGeom is set.
 	// Exception: when the line carries an arrow head, we render a tiny inline

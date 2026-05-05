@@ -26,6 +26,15 @@ export class HtmlRenderer {
 			section.dataset.slideIndex = String(slide.index);
 			// Intra-deck hyperlinks (`#slide-N`) use this id as their target.
 			section.id = `slide-${slide.index}`;
+			// Accessibility landmark: each slide is a region so screen-reader
+			// users can skim the deck. The aria-label is 1-based (matching
+			// how PowerPoint displays slide numbers) and stays ASCII — the
+			// slide's own title, when present, is authored content we can't
+			// sanitise here, so we use a synthetic name to avoid attribute
+			// injection. A title-shape carrying role="heading" below
+			// provides the richer per-slide heading outline for AT.
+			section.setAttribute("role", "region");
+			section.setAttribute("aria-label", `Slide ${slide.index + 1}`);
 			// Slide-level parse failure: skip the normal shape pipeline and
 			// emit a visible error banner so the reader sees which slide
 			// failed. The section is still sized by the style block so
