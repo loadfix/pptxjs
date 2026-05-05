@@ -1,6 +1,7 @@
 import type { Options } from './pptx-preview';
 import type { Presentation } from './presentation';
 import type { ShapeLike, Shape, PicShape, TableShape, TableCell, Paragraph, Run } from './presentation-parser';
+import { addSharedClass } from './shared-classes';
 
 // English Metric Units per pixel at 96 DPI. 914400 EMU = 1 inch = 96 px.
 const EMU_PER_PX = 9525;
@@ -17,6 +18,9 @@ export class HtmlRenderer {
 		for (const slide of presentation.slides) {
 			const section = document.createElement("section");
 			section.className = `${options.className}-slide`;
+			// Cross-format shared class (see shared-classes.ts). A PPTX
+			// slide, DOCX page, and XLSX sheet all carry `.oox-page`.
+			addSharedClass(section, "page");
 			section.dataset.slideIndex = String(slide.index);
 			if (slide.background?.kind === 'solid') {
 				section.style.background = slide.background.colorHex;
@@ -40,6 +44,11 @@ function renderShapeLike(shape: ShapeLike, cls: string): HTMLElement {
 function renderTable(t: TableShape, cls: string): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-table`;
+	// Cross-format shared class — the outer wrapper gets `.oox-table` so
+	// manifest selectors targeting "a rendered table, any format" can use
+	// a single selector. The inner <table> is unchanged (and in DOCX /
+	// XLSX output the shared class goes on the <table> itself).
+	addSharedClass(wrap, "table");
 	Object.assign(wrap.style, positionStyle(t.x, t.y, t.cx, t.cy));
 
 	const table = document.createElement("table");
@@ -62,6 +71,8 @@ function renderTable(t: TableShape, cls: string): HTMLElement {
 
 	for (const row of t.rows) {
 		const tr = document.createElement("tr");
+		// Cross-format shared class (see shared-classes.ts).
+		addSharedClass(tr, "table-row");
 		if (row.heightEmu) tr.style.height = `${emuToPx(row.heightEmu)}px`;
 		for (const cell of row.cells) {
 			// Continuation cells of a span are suppressed; the primary cell
@@ -78,6 +89,8 @@ function renderTable(t: TableShape, cls: string): HTMLElement {
 
 function renderCell(cell: TableCell): HTMLTableCellElement {
 	const td = document.createElement("td");
+	// Cross-format shared class (see shared-classes.ts).
+	addSharedClass(td, "table-cell");
 	td.style.border = "1px solid #ccc";
 	td.style.padding = "4px";
 	td.style.verticalAlign = "top";
@@ -173,6 +186,10 @@ function renderCustGeomSvg(shape: Shape): SVGSVGElement {
 function renderPic(pic: PicShape, cls: string): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-pic`;
+	// Cross-format shared class — the outer wrapper gets `.oox-image` so
+	// manifest selectors targeting "a rendered image, any format" can use
+	// a single selector.
+	addSharedClass(wrap, "image");
 	Object.assign(wrap.style, positionStyle(pic.x, pic.y, pic.cx, pic.cy));
 	if (pic.src) {
 		const img = document.createElement("img");
@@ -195,6 +212,8 @@ type AutoNumState = Map<number, number>;
 
 function renderParagraph(p: Paragraph, autoNumState: AutoNumState): HTMLElement {
 	const el = document.createElement("p");
+	// Cross-format shared class (see shared-classes.ts).
+	addSharedClass(el, "paragraph");
 	el.style.margin = "0";
 	if (p.level > 0) el.style.marginLeft = `${p.level * 24}px`;
 
@@ -271,6 +290,8 @@ function toRoman(n: number): string {
 
 function renderRun(run: Run): HTMLElement {
 	const el = document.createElement("span");
+	// Cross-format shared class (see shared-classes.ts).
+	addSharedClass(el, "run");
 	el.textContent = run.text;
 	const s = run.style;
 	if (s.bold) el.style.fontWeight = "bold";
