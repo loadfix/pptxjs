@@ -11,7 +11,8 @@
 // no drawing cache was found: we render a "[SmartArt]" placeholder.
 
 import type { ChartFallbackShape, SmartArtFallbackShape } from '../graphic-frame';
-import { positionStyle } from './geom';
+import { emuToPx, positionStyle } from './geom';
+import { renderChart } from './chart';
 
 export function renderChartFallback(shape: ChartFallbackShape, cls: string): HTMLElement {
 	const wrap = document.createElement("div");
@@ -37,6 +38,12 @@ export function renderChartFallback(shape: ChartFallbackShape, cls: string): HTM
 		img.style.height = "100%";
 		img.style.objectFit = "contain";
 		wrap.appendChild(img);
+	} else if (shape.model) {
+		// Render from parsed ChartModel as inline SVG sized to the frame.
+		const svg = renderChart(shape.model, emuToPx(shape.cx), emuToPx(shape.cy));
+		svg.style.width = "100%";
+		svg.style.height = "100%";
+		wrap.appendChild(svg);
 	} else {
 		applyPlaceholderStyle(wrap, "[Chart]");
 	}
