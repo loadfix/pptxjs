@@ -3,7 +3,7 @@ import type { BodyProperties } from '../text-style';
 import type { ShapeEffects, OuterShadow, InnerShadow, Glow, SoftEdge, Reflection, Blur } from '../effects';
 import type { LineStyle, LineEnd } from '../fill';
 import { emuToPx, positionStyle, transformStyle, SVG_NS } from './geom';
-import { renderParagraph, type AutoNumState, type BodyTextContext, type FieldContext } from './text';
+import { renderParagraphs, type AutoNumState, type BodyTextContext, type FieldContext } from './text';
 import {
 	approxSolidColorFromFill,
 	fillToCssBackground,
@@ -194,8 +194,8 @@ function renderTextBody(
 	}
 
 	const autoNumState: AutoNumState = new Map();
-	for (const p of shape.paragraphs) {
-		wrap.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls));
+	for (const node of renderParagraphs(shape.paragraphs, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls)) {
+		wrap.appendChild(node);
 	}
 	return wrap;
 }

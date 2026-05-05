@@ -37,7 +37,26 @@ export function renderParagraph(
 ): HTMLElement {
 	const el = document.createElement("p");
 	el.style.margin = "0";
+	fillParagraphBox(el, p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls, /* suppressBulletMarker */ false);
+	return el;
+}
 
+// Apply paragraph-level styles and run content to an existing element. The
+// element can be a <p> (standalone paragraph) or an <li> (inside a coalesced
+// list). When `suppressBulletMarker` is true, the char/blip marker glyph is
+// omitted because the surrounding <ul>/<ol> is expected to draw it via the
+// browser's list-item machinery (we still inject a leading span for exotic
+// autoNum schemes CSS can't express, e.g. CJK/Thai/Hebrew).
+function fillParagraphBox(
+	el: HTMLElement,
+	p: Paragraph,
+	autoNumState: AutoNumState,
+	hyperlinkUrls: Map<string, string>,
+	fieldCtx: FieldContext | undefined,
+	bodyCtx: BodyTextContext | undefined,
+	embedUrls: Map<string, string> | undefined,
+	suppressBulletMarker: boolean,
+): void {
 	// Left padding — effective left margin comes from `marL` when set, else
 	// falls back to the PowerPoint default of 342900 EMU per indent level
 	// (roughly 0.375"). Emit as padding-left so text-indent on the first line
@@ -98,38 +117,41 @@ export function renderParagraph(
 
 	const bullet = p.style.bullet;
 	if (bullet && bullet.kind !== "none") {
-		const marker = document.createElement("span");
-		marker.style.marginRight = "0.4em";
-		// BulletMarker fields: sizePct, colorHex, fontFamily.
-		if (bullet.sizePct != null) {
-			// sizePct is per-mille (e.g. 75000 = 75%).
-			marker.style.fontSize = `${bullet.sizePct / 1000}%`;
-		}
-		if (bullet.colorHex) marker.style.color = bullet.colorHex;
-		if (bullet.fontFamily) marker.style.fontFamily = bullet.fontFamily;
-		if (bullet.kind === "char") {
-			marker.textContent = bullet.char;
-		} else if (bullet.kind === "blip") {
-			// Image bullet — resolve the rId through the embedUrls map.
-			// Fall back silently (empty marker) when the embed is missing.
-			const url = embedUrls?.get(bullet.rId);
-			if (url) {
-				const img = document.createElement("img");
-				img.src = url;
-				img.alt = "";
-				// Size the glyph to roughly the text height. Using `em` keeps it
-				// in sync with the surrounding run size.
-				img.style.height = "1em";
-				img.style.verticalAlign = "text-bottom";
-				marker.appendChild(img);
-			}
-		} else {
+		// For autoNum schemes that CSS list-style-type can handle we still need
+		// to advance the counter so sibling paragraphs increment correctly,
+		// even though we suppress the inline marker glyph.
+		const needsInlineMarker = bulletNeedsInlineMarker(bullet);
+		const emitInline = !suppressBulletMarker || needsInlineMarker;
+		if (bullet.kind === "autoNum") {
 			const prev = autoNumState.get(p.level) ?? (bullet.startAt != null ? bullet.startAt - 1 : 0);
 			const n = prev + 1;
 			autoNumState.set(p.level, n);
-			marker.textContent = formatAutoNum(bullet.type, n);
+			if (emitInline) {
+				const marker = makeBulletMarker(bullet);
+				marker.textContent = formatAutoNum(bullet.type, n);
+				el.appendChild(marker);
+			}
+		} else if (emitInline) {
+			const marker = makeBulletMarker(bullet);
+			if (bullet.kind === "char") {
+				marker.textContent = bullet.char;
+			} else {
+				// Image bullet — resolve the rId through the embedUrls map.
+				// Fall back silently (empty marker) when the embed is missing.
+				const url = embedUrls?.get(bullet.rId);
+				if (url) {
+					const img = document.createElement("img");
+					img.src = url;
+					img.alt = "";
+					// Size the glyph to roughly the text height. Using `em` keeps it
+					// in sync with the surrounding run size.
+					img.style.height = "1em";
+					img.style.verticalAlign = "text-bottom";
+					marker.appendChild(img);
+				}
+			}
+			el.appendChild(marker);
 		}
-		el.appendChild(marker);
 	} else {
 		// Reset downstream counters when a paragraph at this level is non-auto.
 		autoNumState.delete(p.level);
@@ -138,7 +160,131 @@ export function renderParagraph(
 	for (const run of p.runs) {
 		el.appendChild(renderRun(run, hyperlinkUrls, fieldCtx, bodyCtx));
 	}
-	return el;
+}
+
+function makeBulletMarker(bullet: { sizePct: number | null; colorHex: string | null; fontFamily: string | null }): HTMLSpanElement {
+	const marker = document.createElement("span");
+	marker.style.marginRight = "0.4em";
+	if (bullet.sizePct != null) {
+		marker.style.fontSize = `${bullet.sizePct / 1000}%`;
+	}
+	if (bullet.colorHex) marker.style.color = bullet.colorHex;
+	if (bullet.fontFamily) marker.style.fontFamily = bullet.fontFamily;
+	return marker;
+}
+
+// Walks a paragraph array and coalesces consecutive bulleted paragraphs at
+// the same structural level into a single <ul> (char/blip) or <ol> (autoNum).
+// Non-bulleted paragraphs flush the current list and emit as a standalone
+// <p>. Returns the ordered list of top-level nodes the caller should append.
+//
+// Bullet / numbered structure satisfies the ooxml-validate conformance cases
+// bullet-list and bullet-numbered, which expect real <li> elements under
+// <ul>/<ol> with data-bullet-type="bullet"|"numbered".
+export function renderParagraphs(
+	paragraphs: Paragraph[],
+	autoNumState: AutoNumState,
+	hyperlinkUrls: Map<string, string>,
+	fieldCtx?: FieldContext,
+	bodyCtx?: BodyTextContext,
+	embedUrls?: Map<string, string>,
+): HTMLElement[] {
+	const out: HTMLElement[] = [];
+	let currentList: HTMLElement | null = null;
+	let currentTag: 'ul' | 'ol' | null = null;
+
+	for (const p of paragraphs) {
+		const kind = bulletListKind(p);
+		if (kind === null) {
+			// Non-bulleted: close any open list, emit as a <p>.
+			currentList = null;
+			currentTag = null;
+			out.push(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls));
+			continue;
+		}
+		const tag: 'ul' | 'ol' = kind === 'numbered' ? 'ol' : 'ul';
+		if (currentList === null || currentTag !== tag) {
+			currentList = document.createElement(tag);
+			currentList.setAttribute('data-bullet-type', kind === 'numbered' ? 'numbered' : 'bullet');
+			// Reset the browser's default list chrome so inherited slide
+			// padding / margins don't fight with the paragraph-level marL/
+			// indent that `fillParagraphBox` already applies to each <li>.
+			currentList.style.margin = "0";
+			currentList.style.padding = "0";
+			currentList.style.listStylePosition = "inside";
+			if (tag === 'ol') {
+				// Map the autoNum scheme to a CSS list-style-type where one
+				// exists; otherwise fall back to `none` and rely on the
+				// inline marker span injected per-<li> for CJK/Thai/Hebrew.
+				const bullet = p.style.bullet;
+				if (bullet && bullet.kind === 'autoNum') {
+					const lst = autoNumToListStyle(bullet.type);
+					currentList.style.listStyleType = lst ?? 'none';
+				} else {
+					currentList.style.listStyleType = 'decimal';
+				}
+			} else {
+				// For char/blip, suppress the browser's default disc and rely
+				// on the inline marker span we inject per-<li> so the exact
+				// author-chosen glyph (or embedded image) renders.
+				currentList.style.listStyleType = 'none';
+			}
+			currentTag = tag;
+			out.push(currentList);
+		}
+		const li = document.createElement('li');
+		fillParagraphBox(li, p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls, /* suppressBulletMarker */ true);
+		currentList.appendChild(li);
+	}
+	return out;
+}
+
+// Returns 'bullet' | 'numbered' for a paragraph that should live inside a
+// <ul>/<ol>, or null for paragraphs that should stand alone.
+function bulletListKind(p: Paragraph): 'bullet' | 'numbered' | null {
+	const b = p.style.bullet;
+	if (!b || b.kind === 'none') return null;
+	if (b.kind === 'autoNum') return 'numbered';
+	return 'bullet';
+}
+
+// Whether the autoNum scheme needs an inline prefix span because CSS
+// list-style-type can't express it (CJK numerals, Hangul, Hebrew, Thai,
+// and custom circled/double-byte variants). Returns false for char/blip —
+// those are driven by the inline span already.
+function bulletNeedsInlineMarker(bullet: NonNullable<Paragraph['style']['bullet']>): boolean {
+	if (bullet.kind === 'char' || bullet.kind === 'blip') return false;
+	if (bullet.kind !== 'autoNum') return false;
+	return autoNumToListStyle(bullet.type) === null;
+}
+
+// Map an OOXML autoNum scheme to a CSS `list-style-type` keyword. Returns
+// null when no CSS keyword covers the scheme (caller falls back to injecting
+// an inline marker span from `formatAutoNum`).
+export function autoNumToListStyle(type: string): string | null {
+	switch (type) {
+		case 'arabicPeriod':
+		case 'arabicParenR':
+		case 'arabicParenBoth':
+		case 'arabicPlain':
+		case 'arabic1Minus':
+		case 'arabic2Minus':
+		case 'arabicDbPeriod':
+		case 'arabicDbPlain':
+			return 'decimal';
+		case 'alphaLcPeriod':
+		case 'alphaLcParenR':
+			return 'lower-alpha';
+		case 'alphaUcPeriod':
+		case 'alphaUcParenR':
+			return 'upper-alpha';
+		case 'romanLcPeriod':
+			return 'lower-roman';
+		case 'romanUcPeriod':
+			return 'upper-roman';
+		default:
+			return null;
+	}
 }
 
 // OOXML auto-number types. See ECMA-376 §21.1.2.1 (ST_TextAutonumberScheme)
