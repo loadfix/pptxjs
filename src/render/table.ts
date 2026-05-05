@@ -40,6 +40,70 @@ function borderCss(line: LineStyle | null): string | null {
 	return `${widthPx}px ${dashToCss(line.dash)} ${color}`;
 }
 
+// SVG stroke-dasharray derived from a LineStyle. Units are multiples of
+// stroke width (matching what PowerPoint effectively does). Returns null
+// for solid lines so the attribute can be omitted.
+function dashToSvgArray(dash: LineStyle['dash']): string | null {
+	switch (dash) {
+		case 'dash':
+		case 'sysDash':
+			return '4 3';
+		case 'lgDash':
+			return '8 3';
+		case 'dot':
+		case 'sysDot':
+			return '1 3';
+		case 'dashDot':
+		case 'sysDashDot':
+			return '4 3 1 3';
+		case 'lgDashDot':
+			return '8 3 1 3';
+		default:
+			return null;
+	}
+}
+
+// Build an <svg> overlay drawing a diagonal line inside the cell. The
+// viewBox is a fixed 100x100 and preserveAspectRatio="none" stretches
+// the line with whatever size the cell takes. Returns null when the line
+// resolves to a no-op.
+function diagonalSvg(line: LineStyle, corners: 'tlbr' | 'blTr'): SVGSVGElement | null {
+	if (line.widthEmu === 0) return null;
+	const color = solidColorFromFill(line.fill ?? null);
+	if (!color) return null;
+	const widthPx = line.widthEmu != null ? Math.max(emuToPx(line.widthEmu), 0.5) : 1;
+
+	const svgNs = 'http://www.w3.org/2000/svg';
+	const svg = document.createElementNS(svgNs, 'svg');
+	svg.setAttribute('viewBox', '0 0 100 100');
+	svg.setAttribute('preserveAspectRatio', 'none');
+	svg.setAttribute('width', '100%');
+	svg.setAttribute('height', '100%');
+	svg.style.position = 'absolute';
+	svg.style.inset = '0';
+	svg.style.pointerEvents = 'none';
+
+	const lineEl = document.createElementNS(svgNs, 'line');
+	if (corners === 'tlbr') {
+		lineEl.setAttribute('x1', '0');
+		lineEl.setAttribute('y1', '0');
+		lineEl.setAttribute('x2', '100');
+		lineEl.setAttribute('y2', '100');
+	} else {
+		lineEl.setAttribute('x1', '0');
+		lineEl.setAttribute('y1', '100');
+		lineEl.setAttribute('x2', '100');
+		lineEl.setAttribute('y2', '0');
+	}
+	lineEl.setAttribute('stroke', color);
+	lineEl.setAttribute('stroke-width', String(widthPx));
+	lineEl.setAttribute('vector-effect', 'non-scaling-stroke');
+	const dashArr = dashToSvgArray(line.dash);
+	if (dashArr) lineEl.setAttribute('stroke-dasharray', dashArr);
+	svg.appendChild(lineEl);
+	return svg;
+}
+
 // Merge band b into a. Later arguments win (used for the cascade).
 function mergeBand(a: TableBandStyle, b: TableBandStyle): TableBandStyle {
 	return {
@@ -68,8 +132,9 @@ function emptyBandInline(): TableBandStyle {
 
 // Derive the effective band style for a specific cell. Cascades:
 //   wholeTbl → row banding (band1H/band2H for inner rows; firstRow/lastRow
-//   override the banding on the edges) → column banding (band1V/band2V,
-//   firstCol/lastCol) → corner cells (nwCell/etc — TODO).
+//   override the banding on the edges) → column banding (band1V/band2V
+//   for inner columns; firstCol/lastCol override on edges) → corner cells
+//   (nwCell/neCell/swCell/seCell) when both surrounding row+col flags fire.
 function resolveBandForCell(
 	style: TableStyle,
 	flags: TableShape['tableFlags'],
@@ -98,13 +163,27 @@ function resolveBandForCell(
 	if (isFirstRow) out = mergeBand(out, style.firstRow);
 	if (isLastRow) out = mergeBand(out, style.lastRow);
 
-	// Column banding — TODO: left as-is until we need it. The data is
-	// captured; just never applied for now.
-	void style.band1V; void style.band2V;
+	// Column banding, mirroring the row-banding logic. Applied before
+	// firstCol/lastCol so those still win on the edges.
 	const isFirstCol = flags.firstCol && colIndex === 0;
 	const isLastCol = flags.lastCol && colIndex === colCount - 1;
+	if (flags.bandCol && !isFirstCol && !isLastCol) {
+		const offset = flags.firstCol ? 1 : 0;
+		const banded = (colIndex - offset);
+		if (banded >= 0) {
+			out = mergeBand(out, banded % 2 === 0 ? style.band1V : style.band2V);
+		}
+	}
 	if (isFirstCol) out = mergeBand(out, style.firstCol);
 	if (isLastCol) out = mergeBand(out, style.lastCol);
+
+	// Corner cells — apply last so they override the row/col bands at the
+	// four table corners. Both the row-edge flag and the column-edge flag
+	// must be set for the corner style to fire.
+	if (isFirstRow && isFirstCol) out = mergeBand(out, style.nwCell);
+	if (isFirstRow && isLastCol) out = mergeBand(out, style.neCell);
+	if (isLastRow && isFirstCol) out = mergeBand(out, style.swCell);
+	if (isLastRow && isLastCol) out = mergeBand(out, style.seCell);
 
 	return out;
 }
@@ -152,6 +231,7 @@ export function renderTable(
 	cls: string,
 	tableStyles: Map<string, TableStyle> | null,
 	hyperlinkUrls: Map<string, string>,
+	embedUrls: Map<string, string>,
 	fieldCtx?: FieldContext,
 ): HTMLElement {
 	const wrap = document.createElement("div");
@@ -202,7 +282,7 @@ export function renderTable(
 			const band = style
 				? resolveBandForCell(style, t.tableFlags, rowIndex, rowCount, colIndex, colCount)
 				: null;
-			tr.appendChild(renderCell(cell, band, rowIndex, rowCount, colIndex, colCount, hyperlinkUrls, fieldCtx));
+			tr.appendChild(renderCell(cell, band, rowIndex, rowCount, colIndex, colCount, hyperlinkUrls, embedUrls, fieldCtx));
 			colIndex += cell.gridSpan || 1;
 		}
 		table.appendChild(tr);
@@ -220,6 +300,7 @@ export function renderCell(
 	colIndex: number,
 	colCount: number,
 	hyperlinkUrls: Map<string, string>,
+	embedUrls: Map<string, string>,
 	fieldCtx?: FieldContext,
 ): HTMLTableCellElement {
 	const td = document.createElement("td");
@@ -266,9 +347,25 @@ export function renderCell(
 	if (cell.gridSpan > 1) td.colSpan = cell.gridSpan;
 	if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
 
+	// Diagonal borders. <a:lnTlToBr> and <a:lnBlToTr> don't map onto any
+	// native <td> border property, so we overlay them as absolutely-
+	// positioned SVG inside the cell. pointer-events: none lets clicks
+	// still reach the cell content.
+	const tlbrLine = cellBorders.tlbr ?? bandBorders?.tlbr ?? null;
+	const blTrLine = cellBorders.blTr ?? bandBorders?.blTr ?? null;
+	if (tlbrLine || blTrLine) td.style.position = 'relative';
+	if (tlbrLine) {
+		const svg = diagonalSvg(tlbrLine, 'tlbr');
+		if (svg) td.appendChild(svg);
+	}
+	if (blTrLine) {
+		const svg = diagonalSvg(blTrLine, 'blTr');
+		if (svg) td.appendChild(svg);
+	}
+
 	const autoNumState: AutoNumState = new Map();
 	for (const p of cell.paragraphs) {
-		td.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx));
+		td.appendChild(renderParagraph(p, autoNumState, hyperlinkUrls, fieldCtx, undefined, embedUrls));
 	}
 	return td;
 }

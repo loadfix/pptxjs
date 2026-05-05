@@ -6,7 +6,7 @@ from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR_TYPE
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 from lxml import etree
@@ -258,6 +258,109 @@ duotone_el = etree.SubElement(_blip(duo._element), _a("duotone"))
 _sub(duotone_el, "srgbClr", val="1F3A93")
 _sub(duotone_el, "srgbClr", val="FFD9B3")
 
+# Slide exercising <a:custGeom> with arcTo + multi-path + fill="none".
+# python-pptx doesn't have a high-level API for custGeom, so we splice raw
+# OOXML onto rectangle shapes' spPr.
+custgeom_slide = prs.slides.add_slide(prs.slide_layouts[5])
+custgeom_slide.shapes.title.text = "Custom geometry"
+
+
+def _replace_geom(shape, custgeom_xml):
+    """Swap out <a:prstGeom>/<a:custGeom> on a shape for the given XML."""
+    spPr = shape._element.spPr
+    for tag in ("a:prstGeom", "a:custGeom"):
+        for el in spPr.findall(qn(tag)):
+            spPr.remove(el)
+    spPr.append(etree.fromstring(custgeom_xml))
+
+
+# 1) Pie slice — uses arcTo to draw a 90° wedge.
+pie = custgeom_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(0.75), Inches(2), Inches(2), Inches(2)
+)
+pie.fill.solid()
+pie.fill.fore_color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+_replace_geom(
+    pie,
+    """<a:custGeom xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'>
+  <a:avLst/>
+  <a:gdLst/>
+  <a:ahLst/>
+  <a:cxnLst/>
+  <a:rect l='0' t='0' r='0' b='0'/>
+  <a:pathLst>
+    <a:path w='100000' h='100000'>
+      <a:moveTo><a:pt x='50000' y='50000'/></a:moveTo>
+      <a:lnTo><a:pt x='100000' y='50000'/></a:lnTo>
+      <a:arcTo wR='50000' hR='50000' stAng='0' swAng='5400000'/>
+      <a:close/>
+    </a:path>
+  </a:pathLst>
+</a:custGeom>""",
+)
+
+# 2) Multi-path: outer diamond + inner diamond, both as separate <a:path>.
+multi = custgeom_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(3.25), Inches(2), Inches(2), Inches(2)
+)
+multi.fill.solid()
+multi.fill.fore_color.rgb = RGBColor(0xC0, 0x50, 0x4D)
+_replace_geom(
+    multi,
+    """<a:custGeom xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'>
+  <a:avLst/>
+  <a:gdLst/>
+  <a:ahLst/>
+  <a:cxnLst/>
+  <a:rect l='0' t='0' r='0' b='0'/>
+  <a:pathLst>
+    <a:path w='100000' h='100000'>
+      <a:moveTo><a:pt x='50000' y='0'/></a:moveTo>
+      <a:lnTo><a:pt x='100000' y='50000'/></a:lnTo>
+      <a:lnTo><a:pt x='50000' y='100000'/></a:lnTo>
+      <a:lnTo><a:pt x='0' y='50000'/></a:lnTo>
+      <a:close/>
+    </a:path>
+    <a:path w='100000' h='100000'>
+      <a:moveTo><a:pt x='50000' y='25000'/></a:moveTo>
+      <a:lnTo><a:pt x='75000' y='50000'/></a:lnTo>
+      <a:lnTo><a:pt x='50000' y='75000'/></a:lnTo>
+      <a:lnTo><a:pt x='25000' y='50000'/></a:lnTo>
+      <a:close/>
+    </a:path>
+  </a:pathLst>
+</a:custGeom>""",
+)
+
+# 3) Open curve with fill="none" — a sine-wave-like cubic bezier stroke.
+open_curve = custgeom_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(5.75), Inches(2), Inches(3), Inches(2)
+)
+open_curve.fill.solid()
+open_curve.fill.fore_color.rgb = RGBColor(0x4F, 0xBD, 0x81)
+open_curve.line.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
+open_curve.line.width = Emu(38100)
+_replace_geom(
+    open_curve,
+    """<a:custGeom xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'>
+  <a:avLst/>
+  <a:gdLst/>
+  <a:ahLst/>
+  <a:cxnLst/>
+  <a:rect l='0' t='0' r='0' b='0'/>
+  <a:pathLst>
+    <a:path w='100000' h='100000' fill='none'>
+      <a:moveTo><a:pt x='0' y='50000'/></a:moveTo>
+      <a:cubicBezTo>
+        <a:pt x='25000' y='0'/>
+        <a:pt x='75000' y='100000'/>
+        <a:pt x='100000' y='50000'/>
+      </a:cubicBezTo>
+    </a:path>
+  </a:pathLst>
+</a:custGeom>""",
+)
+
 # Slide with a table.
 table_slide = prs.slides.add_slide(prs.slide_layouts[5])
 table_slide.shapes.title.text = "A table"
@@ -328,6 +431,135 @@ blip_xml = (
     "</a:blipFill>"
 )
 pic_sp_pr.append(etree.fromstring(blip_xml))
+
+# Slide exercising line dash styles, arrow heads, and dotted borders
+# (Wave 4, A2). python-pptx's connector API doesn't expose <a:prstDash>,
+# <a:headEnd>, or <a:tailEnd>, so we patch the <p:spPr><a:ln> XML directly.
+lines_slide = prs.slides.add_slide(prs.slide_layouts[5])
+lines_slide.shapes.title.text = "Lines"
+
+
+def _set_line_xml(shape, ln_xml):
+    """Replace/insert the <a:ln> child on a shape's <p:spPr>."""
+    spPr = shape._element.spPr
+    for existing in spPr.findall(qn("a:ln")):
+        spPr.remove(existing)
+    spPr.append(etree.fromstring(ln_xml))
+
+
+# Plain solid connector (reference).
+plain = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(1), Inches(2), Inches(4), Inches(2)
+)
+_set_line_xml(
+    plain,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'><a:solidFill><a:srgbClr val='1F497D'/></a:solidFill></a:ln>",
+)
+
+# Dashed connector.
+dashed = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(1), Inches(2.5), Inches(4), Inches(2.5)
+)
+_set_line_xml(
+    dashed,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='C0504D'/></a:solidFill>"
+    "<a:prstDash val='dash'/></a:ln>",
+)
+
+# Dotted connector.
+dotted = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(1), Inches(3), Inches(4), Inches(3)
+)
+_set_line_xml(
+    dotted,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='4F81BD'/></a:solidFill>"
+    "<a:prstDash val='dot'/></a:ln>",
+)
+
+# Long-dash-dot connector.
+lgdashdot = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(1), Inches(3.5), Inches(4), Inches(3.5)
+)
+_set_line_xml(
+    lgdashdot,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='5A7A3B'/></a:solidFill>"
+    "<a:prstDash val='lgDashDot'/></a:ln>",
+)
+
+# Arrow-head connector (triangle tail, no head).
+arrow = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(5.5), Inches(2), Inches(8.5), Inches(2)
+)
+_set_line_xml(
+    arrow,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='1F497D'/></a:solidFill>"
+    "<a:tailEnd type='triangle' w='med' len='med'/></a:ln>",
+)
+
+# Double-headed stealth arrow.
+stealth = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(5.5), Inches(2.5), Inches(8.5), Inches(2.5)
+)
+_set_line_xml(
+    stealth,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='C0504D'/></a:solidFill>"
+    "<a:headEnd type='stealth' w='lg' len='lg'/>"
+    "<a:tailEnd type='stealth' w='lg' len='lg'/></a:ln>",
+)
+
+# Diamond + oval ends on a dashed connector.
+diamond = lines_slide.shapes.add_connector(
+    MSO_CONNECTOR_TYPE.STRAIGHT, Inches(5.5), Inches(3), Inches(8.5), Inches(3)
+)
+_set_line_xml(
+    diamond,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='19050'>"
+    "<a:solidFill><a:srgbClr val='4F81BD'/></a:solidFill>"
+    "<a:prstDash val='dash'/>"
+    "<a:headEnd type='diamond' w='med' len='med'/>"
+    "<a:tailEnd type='oval' w='med' len='med'/></a:ln>",
+)
+
+# Dotted-border rectangle with a round cap + bevel join (non-trivial ln attrs).
+dotted_rect = lines_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(1), Inches(4.5), Inches(3), Inches(1.5)
+)
+dotted_rect.fill.background()
+_set_line_xml(
+    dotted_rect,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='28575' cap='rnd'>"
+    "<a:solidFill><a:srgbClr val='C0504D'/></a:solidFill>"
+    "<a:prstDash val='dot'/>"
+    "<a:bevel/></a:ln>",
+)
+dotted_rect.text_frame.text = "Dotted border"
+
+# Double-compound-line rectangle (cmpd=dbl).
+dbl_rect = lines_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(5), Inches(4.5), Inches(3), Inches(1.5)
+)
+dbl_rect.fill.background()
+_set_line_xml(
+    dbl_rect,
+    "<a:ln xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='38100' cmpd='dbl'>"
+    "<a:solidFill><a:srgbClr val='1F497D'/></a:solidFill></a:ln>",
+)
+dbl_rect.text_frame.text = "Double border"
+
 # Typography slide — exercises underline, strike, super/sub, letter-spacing,
 # and paragraph line-spacing. python-pptx's high-level Font only exposes
 # bold/italic/underline/color/size, so we patch the rPr/pPr XML for the rest.
@@ -377,6 +609,94 @@ lnSpc = etree.SubElement(pPr, qn("a:lnSpc"))
 etree.SubElement(lnSpc, qn("a:spcPct")).set("val", "150000")
 # Re-order: lnSpc must appear before other children per the schema; since this
 # is a fresh pPr the order will be correct.
+# Text-frame body-property slide — exercises <a:bodyPr> semantics:
+# insets/padding, vertical anchor, wrap="none". python-pptx's text_frame
+# helpers only expose a handful of these, so we poke the bodyPr element
+# directly for anchor / wrap.
+textframe_slide = prs.slides.add_slide(prs.slide_layouts[5])
+textframe_slide.shapes.title.text = "Text frame"
+
+
+def _set_bodypr_attr(tb, name, value):
+    bodyPr = tb.text_frame._txBody.bodyPr
+    bodyPr.set(name, value)
+
+
+# 1) Center-anchored text inside a tall box — anchor="ctr" pushes lines to
+#    the vertical middle, bordered so the frame edges are visible.
+ctr_tb = textframe_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(0.5), Inches(1.8), Inches(3), Inches(2.5)
+)
+ctr_tb.fill.background()
+ctr_tb.line.color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+ctr_tb.text_frame.text = "Centered vertically"
+_set_bodypr_attr(ctr_tb, "anchor", "ctr")
+
+# 2) Extra padding — big insets on all sides, anchored to the top.
+pad_tb = textframe_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(4), Inches(1.8), Inches(3), Inches(2.5)
+)
+pad_tb.fill.solid()
+pad_tb.fill.fore_color.rgb = RGBColor(0xE8, 0xEE, 0xF7)
+pad_tb.line.color.rgb = RGBColor(0x4F, 0x81, 0xBD)
+pad_tb.text_frame.text = "Wide insets around this text."
+# ~0.5" on all sides.
+for attr in ("lIns", "tIns", "rIns", "bIns"):
+    _set_bodypr_attr(pad_tb, attr, "457200")
+
+# 3) No-wrap box — wrap="none" lets the text overflow horizontally.
+nowrap_tb = textframe_slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE, Inches(0.5), Inches(4.5), Inches(3), Inches(0.8)
+)
+nowrap_tb.fill.background()
+nowrap_tb.line.color.rgb = RGBColor(0xC0, 0x50, 0x4D)
+nowrap_tb.text_frame.text = "This line should not wrap even though it is long."
+_set_bodypr_attr(nowrap_tb, "wrap", "none")
+
+# Numbering-formats slide — exercises the extended formatAutoNum coverage
+# (circled, CJK, Korean, Thai, Hebrew) plus an image-bullet paragraph. Each
+# paragraph carries a different <a:buAutoNum type="..."/> so the renderer has
+# to run through several branches of the switch. The image-bullet paragraph
+# embeds the same PNG used by the "An image" slide.
+autonum_slide = prs.slides.add_slide(prs.slide_layouts[5])
+autonum_slide.shapes.title.text = "Numbering formats"
+num_tb = autonum_slide.shapes.add_textbox(Inches(1), Inches(1.5), Inches(8), Inches(5))
+num_tf = num_tb.text_frame
+num_tf.word_wrap = True
+
+_autonum_samples = [
+    ("arabicPeriod", "Arabic period"),
+    ("arabic1Minus", "Arabic minus"),
+    ("circleNumDbPlain", "Circled number"),
+    ("ea1ChsPeriod", "Chinese Simplified"),
+    ("ea1JpnKorPlain", "Korean hangul"),
+    ("thaiNumPeriod", "Thai digits"),
+    ("hebrew2Minus", "Hebrew letter"),
+]
+for i, (autonum_type, label) in enumerate(_autonum_samples):
+    para = num_tf.paragraphs[0] if i == 0 else num_tf.add_paragraph()
+    para.text = label
+    pPr = para._p.get_or_add_pPr()
+    buAutoNum = etree.SubElement(pPr, qn("a:buAutoNum"))
+    buAutoNum.set("type", autonum_type)
+
+# Image-bullet paragraph — python-pptx has no "bullet image" helper, so
+# add a temporary picture to register the image part + rel, steal its rId,
+# remove the picture, then reference the rId from <a:buBlip>.
+_tmp_bullet_pic = autonum_slide.shapes.add_picture(
+    str(image_path), 0, 0, Inches(1), Inches(1)
+)
+_tmp_blip = _tmp_bullet_pic._element.find(".//" + qn("a:blip"))
+_bullet_rid = _tmp_blip.get(qn("r:embed"))
+_tmp_bullet_pic._element.getparent().remove(_tmp_bullet_pic._element)
+
+blip_para = num_tf.add_paragraph()
+blip_para.text = "Image bullet"
+blip_pPr = blip_para._p.get_or_add_pPr()
+buBlip = etree.SubElement(blip_pPr, qn("a:buBlip"))
+buBlip_blip = etree.SubElement(buBlip, qn("a:blip"))
+buBlip_blip.set(qn("r:embed"), _bullet_rid)
+
 # Slide with a chart — exercises the chart graphicFrame fallback path.
 # python-pptx doesn't emit a cached preview image, so rendering is expected
 # to show the "[Chart]" placeholder; the point of the fixture is to

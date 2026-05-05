@@ -44,8 +44,10 @@ export interface TableBandStyle {
 
 // A TableStyle captures enough of the band definitions for the renderer
 // to cascade: whole-table defaults first, then row-oriented overrides
-// (band1H/band2H/firstRow/lastRow). Column banding and corner cells are
-// represented but not yet applied by the renderer.
+// (band1H/band2H/firstRow/lastRow), column banding (band1V/band2V with
+// firstCol/lastCol overrides), and finally the four corner cells
+// (nwCell/neCell/swCell/seCell) which win when both surrounding row and
+// column flags are set.
 export interface TableStyle {
 	styleId: string;
 	wholeTbl: TableBandStyle;
@@ -57,6 +59,10 @@ export interface TableStyle {
 	band2H: TableBandStyle;
 	band1V: TableBandStyle;
 	band2V: TableBandStyle;
+	nwCell: TableBandStyle;
+	neCell: TableBandStyle;
+	swCell: TableBandStyle;
+	seCell: TableBandStyle;
 }
 
 export function emptyTableBorders(): TableBorders {
@@ -79,6 +85,10 @@ function emptyStyle(styleId: string): TableStyle {
 		band2H: emptyBand(),
 		band1V: emptyBand(),
 		band2V: emptyBand(),
+		nwCell: emptyBand(),
+		neCell: emptyBand(),
+		swCell: emptyBand(),
+		seCell: emptyBand(),
 	};
 }
 
@@ -213,6 +223,10 @@ function parseTableStyle(el: Element, clrMap: ClrMap, theme: ThemeColors): Table
 	for (const c of childrenNS(el, A_NS.a, "band2H")) style.band2H = parseBand(c, clrMap, theme);
 	for (const c of childrenNS(el, A_NS.a, "band1V")) style.band1V = parseBand(c, clrMap, theme);
 	for (const c of childrenNS(el, A_NS.a, "band2V")) style.band2V = parseBand(c, clrMap, theme);
+	for (const c of childrenNS(el, A_NS.a, "nwCell")) style.nwCell = parseBand(c, clrMap, theme);
+	for (const c of childrenNS(el, A_NS.a, "neCell")) style.neCell = parseBand(c, clrMap, theme);
+	for (const c of childrenNS(el, A_NS.a, "swCell")) style.swCell = parseBand(c, clrMap, theme);
+	for (const c of childrenNS(el, A_NS.a, "seCell")) style.seCell = parseBand(c, clrMap, theme);
 
 	return style;
 }

@@ -21,6 +21,29 @@ export class HtmlRenderer {
 			section.dataset.slideIndex = String(slide.index);
 			// Intra-deck hyperlinks (`#slide-N`) use this id as their target.
 			section.id = `slide-${slide.index}`;
+			// Slide-level parse failure: skip the normal shape pipeline and
+			// emit a visible error banner so the reader sees which slide
+			// failed. The section is still sized by the style block so
+			// surrounding layout isn't disturbed.
+			if (slide.parseError !== null) {
+				const banner = document.createElement("div");
+				banner.setAttribute(
+					"style",
+					"padding: 1rem; background: #fee; border: 1px solid #c00; color: #c00;",
+				);
+				const strong = document.createElement("strong");
+				// textContent (not innerHTML) — parseError comes from
+				// user-supplied PPTX content and must never be interpreted as
+				// HTML. The " " and the text after it are appended as
+				// separate text nodes for the same reason.
+				strong.textContent = `Slide ${slide.index + 1} could not be rendered:`;
+				banner.appendChild(strong);
+				banner.appendChild(document.createTextNode(" "));
+				banner.appendChild(document.createTextNode(slide.parseError));
+				section.appendChild(banner);
+				out.push(section);
+				continue;
+			}
 			applyBackground(section, slide);
 			const fieldCtx = { slide, firstSlideNum: presentation.firstSlideNum };
 			for (const shape of slide.shapes) {
@@ -33,7 +56,7 @@ export class HtmlRenderer {
 			}
 			out.push(section);
 			if (options.renderNotes) {
-				const notesEl = renderNotesBlock(slide, options.className);
+				const notesEl = renderNotesBlock(slide, options.className, presentation.notesMaster);
 				if (notesEl) out.push(notesEl);
 			}
 		}

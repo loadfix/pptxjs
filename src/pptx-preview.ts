@@ -2,6 +2,10 @@ import { Presentation } from './presentation';
 import { PresentationParser } from './presentation-parser';
 import { HtmlRenderer } from './render';
 
+// Re-export the structural metadata types so downstream consumers can type
+// their own section/ToC UI without reaching into the parser module.
+export type { Section, SlideSize } from './presentation-parser';
+
 export interface Options {
 	className: string;
 	inWrapper: boolean;
@@ -19,6 +23,14 @@ export interface Options {
 	// markers at the comment's (x,y) with hover tooltips showing the author
 	// and body. Default false for the same reason as renderNotes.
 	renderComments: boolean;
+	// Optional callback invoked when a slide fails to parse. The slide still
+	// takes its slot in `presentation.slides` with `parseError` set and will
+	// render as a red banner, but hosts that want to surface/telemeter the
+	// error (e.g. to their own logger) can hook in here. Errors thrown by
+	// the callback itself are caught and warned — they never propagate back
+	// into the load promise. Defaults to undefined (parse errors are logged
+	// via console.warn only).
+	onSlideError?: (slideIndex: number, err: unknown) => void;
 }
 
 export const defaultOptions: Options = {
@@ -30,6 +42,7 @@ export const defaultOptions: Options = {
 	showHidden: false,
 	renderNotes: false,
 	renderComments: false,
+	onSlideError: undefined,
 };
 
 function mergeOptions(userOptions?: Partial<Options>): Options {
