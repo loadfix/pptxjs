@@ -6,6 +6,8 @@ import { applyBackground } from './background';
 import { renderShapeLike } from './dispatch';
 import { renderNotesBlock, renderCommentMarkers } from './notes';
 import { renderHandoutPages } from './handout';
+import { wrapResponsive } from './responsive';
+import { addSharedClass } from '../shared-classes';
 
 export class HtmlRenderer {
 	async render(presentation: Presentation, options: Options): Promise<Node[]> {
@@ -17,15 +19,27 @@ export class HtmlRenderer {
 
 		const slideW = emuToPx(presentation.slideSize.cx);
 		const slideH = emuToPx(presentation.slideSize.cy);
-		out.push(makeStyleNode(options.className, slideW, slideH));
+		out.push(makeStyleNode(options.className, slideW, slideH, options.responsive === true));
 
 		const embedUrls = presentation.embedUrls;
 		for (const slide of presentation.slides) {
 			const section = document.createElement("section");
 			section.className = `${options.className}-slide`;
+			// Cross-format shared class (see shared-classes.ts). A PPTX
+			// slide, DOCX page, and XLSX sheet all carry `.oox-page`.
+			addSharedClass(section, "page");
 			section.dataset.slideIndex = String(slide.index);
 			// Intra-deck hyperlinks (`#slide-N`) use this id as their target.
 			section.id = `slide-${slide.index}`;
+			// Accessibility landmark: each slide is a region so screen-reader
+			// users can skim the deck. The aria-label is 1-based (matching
+			// how PowerPoint displays slide numbers) and stays ASCII — the
+			// slide's own title, when present, is authored content we can't
+			// sanitise here, so we use a synthetic name to avoid attribute
+			// injection. A title-shape carrying role="heading" below
+			// provides the richer per-slide heading outline for AT.
+			section.setAttribute("role", "region");
+			section.setAttribute("aria-label", `Slide ${slide.index + 1}`);
 			// Slide-level parse failure: skip the normal shape pipeline and
 			// emit a visible error banner so the reader sees which slide
 			// failed. The section is still sized by the style block so
@@ -46,8 +60,12 @@ export class HtmlRenderer {
 				banner.appendChild(document.createTextNode(" "));
 				banner.appendChild(document.createTextNode(slide.parseError));
 				section.appendChild(banner);
-				out.push(section);
 				slideSections.push(section);
+				if (options.responsive) {
+					out.push(wrapResponsive(section, options.className, slideW, slideH));
+				} else {
+					out.push(section);
+				}
 				continue;
 			}
 			applyBackground(section, slide);
@@ -60,8 +78,17 @@ export class HtmlRenderer {
 				const markers = renderCommentMarkers(slide, options.className);
 				if (markers) section.appendChild(markers);
 			}
-			out.push(section);
+			// Responsive mode: wrap each slide in a fluid container so the
+			// slide scales down on narrow viewports. The container reserves
+			// height via aspect-ratio; the <section> inside is transformed
+			// by attachResponsive after mount — pure CSS can't know the
+			// container width.
 			slideSections.push(section);
+			if (options.responsive) {
+				out.push(wrapResponsive(section, options.className, slideW, slideH));
+			} else {
+				out.push(section);
+			}
 			if (options.renderNotes) {
 				const notesEl = renderNotesBlock(slide, options.className, presentation, embedUrls);
 				if (notesEl) out.push(notesEl);

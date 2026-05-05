@@ -1,6 +1,6 @@
 import type { Options } from './pptx-preview';
 import { OpenXmlPackage, resolveRelTarget } from './open-xml-package';
-import { imageMimeFromPath } from './mime';
+import { imageMimeFromPath, isBrowserRenderableImage } from './mime';
 import { convertEmfOrWmfBlob, isEmfOrWmfMime } from './emf';
 import {
 	parseSlide,
@@ -352,9 +352,14 @@ export class Presentation {
 			for (const rel of slideRels.values()) {
 				if (rel.type !== IMAGE_REL_TYPE) continue;
 				const mediaPath = resolveRelTarget(slidePath, rel.target);
+				const mime = imageMimeFromPath(mediaPath);
+				// Skip formats the browser can't render (EMF/WMF/TIFF) — still
+				// assigning a blob URL would cause <img> to surface its alt
+				// text (often the PPTX `descr`, i.e. the source filename).
+				// See mime.ts: isBrowserRenderableImage.
+				if (!isBrowserRenderableImage(mime)) continue;
 				let url = mediaUrlCache.get(mediaPath);
 				if (!url) {
-					const mime = imageMimeFromPath(mediaPath);
 					const blob = await pkg.loadBlob(mediaPath, mime);
 					if (blob) {
 						// EMF / WMF: run through the metafile converter so browsers
@@ -873,6 +878,7 @@ async function loadPartImageEmbeds(pkg: OpenXmlPackage, partPath: string, conver
 			if (dataUrl) urls.set(rel.id, dataUrl);
 			continue;
 		}
+		if (!isBrowserRenderableImage(mime)) continue;
 		urls.set(rel.id, URL.createObjectURL(blob));
 	}
 	return urls;

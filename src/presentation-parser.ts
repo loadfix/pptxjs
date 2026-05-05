@@ -918,7 +918,7 @@ function parseTableCell(tc: Element, ctx: SlideParseContext): TableCell {
 
 function parsePic(pic: Element, ctx: SlideParseContext): PicShape | null {
 	const spPr = firstChildNS(pic, A_NS.p, "spPr");
-	const frame = readXfrm(spPr);
+	let frame = readXfrm(spPr);
 	const blipFill = firstChildNS(pic, A_NS.p, "blipFill");
 	const blip = blipFill && firstChildNS(blipFill, A_NS.a, "blip");
 	const rId = blip?.getAttributeNS(A_NS.r, "embed") ?? null;
@@ -1007,12 +1007,18 @@ function parsePic(pic: Element, ctx: SlideParseContext): PicShape | null {
 	const alt = nv.descr ?? nv.name ?? "";
 	const hyperlinkRId = hyperlinkFromCNvPr(nvPicPr);
 	// Placeholder hookup for pictures — a <p:pic> can sit in a layout/slide
-	// <p:ph type="pic"> frame. We surface type/idx purely for data-attribute
-	// introspection; sizing inheritance is not yet wired up here.
+	// <p:ph type="pic"> frame. When the slide's <p:pic> omits its own xfrm,
+	// inherit position + size from the matching layout/master placeholder.
 	const picNvPr = nvPicPr && firstChildNS(nvPicPr, A_NS.p, "nvPr");
 	const picPh = picNvPr && firstChildNS(picNvPr, A_NS.p, "ph");
 	const picPhType = picPh ? normalizePhType(picPh.getAttribute("type")) : null;
 	const picPhIdx = picPh ? (picPh.getAttribute("idx") ?? "0") : null;
+	const picPhKey = picPhType ? `${picPhType}:${picPhIdx}` : null;
+	if (!frame && picPhKey && picPhType) {
+		const layoutInfo = ctx.layout.byKey.get(picPhKey) ?? ctx.layout.byType.get(picPhType);
+		const masterInfo = ctx.master.byKey.get(picPhKey) ?? ctx.master.byType.get(picPhType);
+		frame = layoutInfo?.frame ?? masterInfo?.frame ?? null;
+	}
 
 	if (!frame && !src) return null;
 	return {

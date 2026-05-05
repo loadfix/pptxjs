@@ -2,6 +2,7 @@ import type { Paragraph, Run, TextRun, Slide } from '../presentation-parser';
 import { emuToPx } from './geom';
 import { withAlphaHex } from '../color-math';
 import { wrapInHyperlink } from './hyperlink';
+import { addSharedClass } from '../shared-classes';
 
 // Counters for auto-numbered bullets within the current shape, keyed by
 // paragraph level. Reset at each new shape.
@@ -36,6 +37,8 @@ export function renderParagraph(
 	embedUrls?: Map<string, string>,
 ): HTMLElement {
 	const el = document.createElement("p");
+	// Cross-format shared class (see shared-classes.ts).
+	addSharedClass(el, "paragraph");
 	el.style.margin = "0";
 	fillParagraphBox(el, p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls, /* suppressBulletMarker */ false);
 	return el;
@@ -233,6 +236,10 @@ export function renderParagraphs(
 			out.push(currentList);
 		}
 		const li = document.createElement('li');
+		// Cross-format shared class — a bullet <li> is still a "paragraph"
+		// in the shared nomenclature (it holds runs and paragraph-level
+		// formatting), so manifest selectors like `.oox-paragraph` match.
+		addSharedClass(li, "paragraph");
 		fillParagraphBox(li, p, autoNumState, hyperlinkUrls, fieldCtx, bodyCtx, embedUrls, /* suppressBulletMarker */ true);
 		currentList.appendChild(li);
 	}
@@ -430,6 +437,8 @@ export function renderRun(
 		// data-pptx-field marker so the P10 fields agent can post-process.
 		// slidenum in particular needs the slide index injected by the caller.
 		const el = document.createElement("span");
+		// Cross-format shared class (see shared-classes.ts).
+		addSharedClass(el, "run");
 		const resolved = resolveField(run.fieldType, run.fallbackText, fieldCtx);
 		el.textContent = resolved;
 		el.setAttribute("data-pptx-field", run.fieldType);
@@ -438,6 +447,8 @@ export function renderRun(
 	}
 	// kind === 'text'
 	const el = document.createElement("span");
+	// Cross-format shared class (see shared-classes.ts).
+	addSharedClass(el, "run");
 	el.textContent = run.text;
 	applyRunStyle(el, run.style, bodyCtx);
 	return wrapInHyperlink(el, run.style.hyperlinkRId, hyperlinkUrls);

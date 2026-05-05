@@ -1,6 +1,7 @@
 import { Presentation } from './presentation';
 import { PresentationParser } from './presentation-parser';
 import { HtmlRenderer } from './render';
+import { attachResponsive } from './render/responsive';
 
 // Re-export the structural metadata types so downstream consumers can type
 // their own section/ToC UI without reaching into the parser module.
@@ -12,6 +13,11 @@ export type { Section, SlideSize } from './presentation-parser';
 // path handles this automatically for bundled consumers; this escape hatch
 // exists purely for script-tag / sandbox environments.
 export { setEmfConverter } from './emf';
+
+// EMU per CSS pixel at 96 DPI — duplicated here so pptx-preview.ts can
+// compute the native slide width for attachResponsive without importing
+// all of render.
+const EMU_PER_PX = 9525;
 
 export interface Options {
 	className: string;
@@ -53,6 +59,18 @@ export interface Options {
 	// slot renders empty. Useful in environments that reject the extra
 	// bundle chunk or canvas dependency deterministically.
 	convertEmf: boolean;
+	/**
+	 * Responsive / mobile rendering. When `true`, each slide is wrapped in
+	 * a `<div class="pptx-slide-container">` that applies a CSS
+	 * `transform: scale(...)` sized to fit the container's width, using a
+	 * ResizeObserver to update the scale as the viewport changes. Slide
+	 * aspect ratio is preserved; content inside the slide keeps its
+	 * pixel coordinates so shape positioning stays exact.
+	 *
+	 * Default `false` — existing consumers keep the fixed-size slide
+	 * layout they rendered before this option landed.
+	 */
+	responsive?: boolean;
 }
 
 export const defaultOptions: Options = {
@@ -67,6 +85,7 @@ export const defaultOptions: Options = {
 	renderHandouts: false,
 	onSlideError: undefined,
 	convertEmf: true,
+	responsive: false,
 };
 
 function mergeOptions(userOptions?: Partial<Options>): Options {
@@ -85,8 +104,9 @@ export async function renderPresentation(presentation: Presentation, userOptions
 }
 
 export async function renderAsync(data: Blob | any, bodyContainer: HTMLElement, styleContainer?: HTMLElement, userOptions?: Partial<Options>): Promise<Presentation> {
-	const pres = await parseAsync(data, userOptions);
-	const nodes = await renderPresentation(pres, userOptions);
+	const ops = mergeOptions(userOptions);
+	const pres = await parseAsync(data, ops);
+	const nodes = await renderPresentation(pres, ops);
 
 	styleContainer ??= bodyContainer;
 	styleContainer.innerHTML = "";
@@ -95,6 +115,14 @@ export async function renderAsync(data: Blob | any, bodyContainer: HTMLElement, 
 	for (const n of nodes) {
 		const c = n.nodeName === "STYLE" ? styleContainer : bodyContainer;
 		c.appendChild(n);
+	}
+
+	// Responsive mode needs a live ResizeObserver so each `.pptx-slide-container`
+	// recomputes its scale factor on container resize. Must run after the
+	// nodes are connected — the observer needs real layout sizes.
+	if (ops.responsive) {
+		const slideWPx = pres.slideSize.cx / EMU_PER_PX;
+		attachResponsive(bodyContainer, slideWPx, ops.className);
 	}
 
 	return pres;

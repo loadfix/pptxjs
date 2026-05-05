@@ -4,6 +4,7 @@ import type { LineStyle, Fill } from '../fill';
 import { emuToPx, positionStyle, transformStyle } from './geom';
 import { renderParagraphs, type AutoNumState, type FieldContext } from './text';
 import { solidColorFromFill } from './fill-utils';
+import { addSharedClass } from '../shared-classes';
 
 // DrawingML <a:prstDash> values → CSS border-style. "solid" is the default
 // when no dash is specified on the line.
@@ -236,6 +237,11 @@ export function renderTable(
 ): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-table`;
+	// Cross-format shared class — the outer wrapper gets `.oox-table` so
+	// manifest selectors targeting "a rendered table, any format" can use
+	// a single selector. The inner <table> is unchanged (DOCX/XLSX put
+	// the shared class on the <table> itself).
+	addSharedClass(wrap, "table");
 	Object.assign(wrap.style, positionStyle(t.x, t.y, t.cx, t.cy));
 	Object.assign(wrap.style, transformStyle(t.rotation60k, t.flipH, t.flipV));
 
@@ -278,6 +284,8 @@ export function renderTable(
 	for (let rowIndex = 0; rowIndex < t.rows.length; rowIndex++) {
 		const row = t.rows[rowIndex];
 		const tr = document.createElement("tr");
+		// Cross-format shared class (see shared-classes.ts).
+		addSharedClass(tr, "table-row");
 		if (row.heightEmu) tr.style.height = `${emuToPx(row.heightEmu)}px`;
 		let colIndex = 0;
 		for (const cell of row.cells) {
@@ -307,6 +315,8 @@ export function renderCell(
 	fieldCtx?: FieldContext,
 ): HTMLTableCellElement {
 	const td = document.createElement("td");
+	// Cross-format shared class (see shared-classes.ts).
+	addSharedClass(td, "table-cell");
 
 	// Padding — per-cell <a:tcPr marL/R/T/B> wins; else PowerPoint defaults.
 	td.style.padding = insetsToPadding(cell.insetsEmu);
