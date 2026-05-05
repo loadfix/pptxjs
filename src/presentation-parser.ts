@@ -29,7 +29,7 @@ export interface Slide {
 	background: import('./background').BackgroundFill | null;
 }
 
-export type ShapeLike = Shape | PicShape | TableShape;
+export type ShapeLike = Shape | PicShape | TableShape | ChartShape;
 
 export interface TableShape {
 	kind: 'table';
@@ -70,6 +70,33 @@ export interface Shape {
 	// Custom geometry (<a:custGeom>), if any. Null for preset/no geometry.
 	// When present, the renderer produces an SVG path instead of a plain box.
 	custGeom: CustGeom | null;
+	// Placeholder type (<p:ph type="...">) — `ctrTitle`, `title`, `subTitle`,
+	// `body`, etc. — when this shape is a placeholder, else null.
+	phType: string | null;
+	// Placeholder idx (<p:ph idx="...">); defaults to "0" when omitted.
+	phIdx: string | null;
+	// True when the shape's <p:nvSpPr> carries the `txBox="1"` flag, i.e.
+	// this is a user-drawn text box rather than a preset geometry.
+	isTextBox: boolean;
+	// Preset geometry name (<a:prstGeom prst="...">) — `rect`, `ellipse`,
+	// `line`, `roundRect`, etc. — or null when absent.
+	prstGeom: string | null;
+}
+
+// A graphic-frame embedding a chart (<p:graphicFrame> holding a
+// <c:chart r:id=...>). We don't render the chart content — we emit an empty
+// positioned frame with data-* attributes so callers/conformance harnesses
+// can select by kind.
+export interface ChartShape {
+	kind: 'chart';
+	x: number;
+	y: number;
+	cx: number;
+	cy: number;
+	// Best-effort chart kind ("bar", "line", "pie", "doughnut", "scatter",
+	// "area", "radar", "bubble", "stock", "surface", ...) when the chart
+	// part was parsed; null when the rel couldn't be resolved.
+	chartType: string | null;
 }
 
 // Minimal <a:custGeom> representation — a single path with the local
@@ -351,7 +378,7 @@ function walkSpTree(container: Element, out: ShapeLike[], ctx: SlideParseContext
 	}
 }
 
-function parseGraphicFrame(gf: Element, ctx: SlideParseContext): TableShape | null {
+function parseGraphicFrame(gf: Element, ctx: SlideParseContext): TableShape | ChartShape | null {
 	// <p:xfrm> lives directly under <p:graphicFrame> (not <p:spPr>).
 	const xfrm = firstChildNS(gf, A_NS.p, "xfrm");
 	const off = xfrm && firstChildNS(xfrm, A_NS.a, "off");
@@ -363,6 +390,22 @@ function parseGraphicFrame(gf: Element, ctx: SlideParseContext): TableShape | nu
 
 	const graphic = firstChildNS(gf, A_NS.a, "graphic");
 	const graphicData = graphic && firstChildNS(graphic, A_NS.a, "graphicData");
+	// Chart graphic frame: <a:graphicData uri=".../chart"><c:chart r:id=".."/>.
+	// We don't render the chart payload — emit an empty positioned frame
+	// whose `data-kind="chart"` / `data-chart-type` hooks let conformance
+	// selectors find it. `chartType` is best-effort: we sniff the URI and
+	// leave deeper inspection to a future wave.
+	if (graphicData) {
+		const uri = graphicData.getAttribute("uri") ?? "";
+		if (uri.includes("/chart") && !firstChildNS(graphicData, A_NS.a, "tbl")) {
+			// Attempt to pull a kind hint from the first element under
+			// graphicData (usually <c:chart r:id="..."/>). We don't follow
+			// the rel here — callers can wire up chart-type resolution
+			// when the chart part is actually parsed. Surface a generic
+			// "chart" kind marker so the data-kind selector matches.
+			return { kind: 'chart', x, y, cx, cy, chartType: null };
+		}
+	}
 	const tbl = graphicData && firstChildNS(graphicData, A_NS.a, "tbl");
 	if (!tbl) return null;
 
@@ -473,6 +516,16 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 	const line = parseLine(spPr ? firstChildNS(spPr, A_NS.a, "ln") : null, ctx.clrMap, ctx.theme);
 	const custGeom = spPr ? parseCustGeom(firstChildNS(spPr, A_NS.a, "custGeom")) : null;
 
+	// txBody carries an optional <p:nvSpPr txBox="1"> flag that marks a
+	// user-drawn text box (as opposed to a preset geometry).
+	const nvSpPrInner = nvSpPr && firstChildNS(nvSpPr, A_NS.p, "cNvSpPr");
+	const isTextBox = nvSpPrInner?.getAttribute("txBox") === "1";
+
+	// Preset geometry name (<a:prstGeom prst="rect"/>) — surfaced as a
+	// data-shape-preset attribute for conformance selectors.
+	const prstGeomEl = spPr ? firstChildNS(spPr, A_NS.a, "prstGeom") : null;
+	const prstGeom = prstGeomEl?.getAttribute("prst") ?? null;
+
 	if (!frame && paragraphs.length === 0 && !fill && !line && !custGeom) return null;
 	return {
 		kind: 'shape',
@@ -484,6 +537,10 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 		line,
 		paragraphs,
 		custGeom,
+		phType,
+		phIdx: ph ? phIdx : null,
+		isTextBox,
+		prstGeom,
 	};
 }
 
