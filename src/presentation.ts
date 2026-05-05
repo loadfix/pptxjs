@@ -4,6 +4,7 @@ import { imageMimeFromPath } from './mime';
 import {
 	parseSlide,
 	parseStaticShapes,
+	parseNotesSlide,
 	Slide,
 	SlideSize,
 	buildPlaceholderMap,
@@ -28,6 +29,7 @@ const LAYOUT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/r
 const MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster";
 const THEME_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme";
 const IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+const NOTES_SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide";
 
 interface MasterBundle {
 	placeholders: PlaceholderMap;
@@ -228,6 +230,31 @@ export class Presentation {
 				parseSlideBackground(doc, master.clrMap, master.theme)
 				?? (layout.doc ? parseSlideBackground(layout.doc, master.clrMap, master.theme) : null)
 				?? (master.doc ? parseSlideBackground(master.doc, master.clrMap, master.theme) : null);
+
+			// Notes slide: a separate part reached via `.../notesSlide`
+			// relationship. We parse the body placeholder's text through
+			// the same paragraph pipeline as the main slide (using the
+			// master text styles for inheritance) and hand it to the
+			// renderer as a flat paragraph list.
+			const slideRels = await pkg.loadRelationships(path);
+			let notesSlidePath: string | null = null;
+			for (const r of slideRels.values()) {
+				if (r.type === NOTES_SLIDE_REL_TYPE) {
+					notesSlidePath = resolveRelTarget(path, r.target);
+					break;
+				}
+			}
+			if (notesSlidePath) {
+				const notesDoc = await pkg.loadXml(notesSlidePath);
+				if (notesDoc) {
+					const notesEmbeds = await embedsFor(notesSlidePath);
+					slide.notes = parseNotesSlide(notesDoc, {
+						...baseCtx,
+						embedUrls: notesEmbeds,
+					});
+				}
+			}
+
 			pres.slides.push(slide);
 		}
 
