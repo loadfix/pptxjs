@@ -2,6 +2,25 @@
 
 Tracked work for this fork. Move entries into the "Done" section below as they ship; link the PR / commit.
 
+## Audit findings 2026-05-05
+
+Captured from a project audit on 2026-05-05. None of these are blockers for 0.1.0; they are housekeeping / drift items.
+
+1. **Triage and delete ~30 legacy remote branches.** All confirmed merged into 0.1.0 via wave-integrated branches, but they clutter the remote. Groups:
+   - `feat/p{1..12}` (12 branches — preset-geom, rotation-flips, fills, effects, typography, image-adjust, table-style, chart-smartart-fallback, hyperlinks, fields, a11y, notes-comments). Merged via later waves — **delete**.
+   - `feat/w4a{1..6}` (6), `feat/w5a{1..5}` (5), `feat/w6a{1..5}` (5), `feat/w7a{1..3}` (3), `feat/w8a{1..3}` (3). All integrated via the corresponding `wave{N}-integrated` branch — **delete**.
+   - `feat/wave{1,2,4,5,6,7,8}-integrated` + `wave1-render-split` + `wave1-types` (9 branches). Merged into master via PRs #2 / #4 / #5 / #6 / #7 — **delete**.
+   - `feat/w1-e-conformance-ci` — parked (per the removed-`.github/` memory note). **Leave** (explicit parked).
+   - `feat/chart-render-v2`, `feat/emf-svg-conversion` — unclear provenance; `emf-svg-conversion` intersects an explicit non-goal. **Inspect briefly, likely delete.**
+   - `fix/w1-f-conformance-gaps-2026-05-04`, `fix/w9-b/d/e/f-*`, `fix/dickinson-sample-bugs` (6 fix branches). All merged into 0.1.0 — **delete**.
+2. **Close GitHub issue #8.** `slide-master-title-placeholder.pptx` produces no rendered slide. Filed 2026-05-05 via the W7-D visual-compare run; it is the only open bug. Likely cause: the layout title placeholder inherits prompt text from the master, and the parser trips on an inherited-only placeholder that has no direct text.
+3. **Refresh README.** Three documentation drifts:
+   - The Options list omits `renderHandouts` and `responsive` (both Wave-9 additions).
+   - The Contributing section still says to run `npm run e2e (Karma + Chrome)` — there is no Karma; the suite is Playwright.
+   - Drop the "Early scaffolding" status line now that 0.1.0 has shipped with full conformance.
+4. **Bound `jszip` version.** Currently declared as `jszip >=3.0.0` (unbounded upper). Bound to `^3`.
+5. **Clean up 43 `test-results/` / `playwright-report-interop/` local artefacts.** Gitignored, but worth a periodic sweep.
+
 ## Open
 
 Remaining gaps after waves 1–5. Split into "possible follow-ups" and "deliberate non-goals" — items in the second group need a new conversation before starting, not just an agent.
