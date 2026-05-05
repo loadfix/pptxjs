@@ -80,6 +80,80 @@ export function svgDashArray(dash: LineStyle['dash']): string | null {
 // of `fillToSvgPaint` don't collide on `url(#id)`.
 let svgPaintIdCounter = 0;
 
+// A monotonically-increasing counter used to namespace inline <filter> ids
+// emitted for softEdge / duotone / biLevel. Combined with a Date.now() stamp
+// (captured at module load) so ids stay unique across re-renders without
+// needing per-render reset plumbing.
+let svgFilterIdCounter = 0;
+const svgFilterIdEpoch = Date.now().toString(36);
+
+export function nextSvgFilterId(prefix: string): string {
+	svgFilterIdCounter += 1;
+	return `${prefix}-${svgFilterIdEpoch}-${svgFilterIdCounter}`;
+}
+
+// Feature-detect SVG filter support — virtually ubiquitous in modern
+// browsers, but the fallback paths (CSS blur / mix-blend-mode overlay /
+// grayscale+contrast) stay live for headless environments that stub
+// SVGFilterElement away.
+export function supportsSvgFilters(): boolean {
+	return typeof SVGFilterElement !== 'undefined';
+}
+
+// Build an inline `<svg width=0 height=0>` containing a single `<filter>`
+// element. The caller wires its children (feGaussianBlur / feColorMatrix /
+// feComponentTransfer / etc) and then appends the returned <svg> next to
+// the element that carries `filter: url(#id)`. Returning the filter element
+// lets the caller attach children; the <svg> wrapper is what gets appended
+// to the DOM so it doesn't consume layout space.
+export function createInlineFilter(id: string): { svg: SVGSVGElement; filter: SVGFilterElement } {
+	const svg = document.createElementNS(SVG_NS, 'svg') as SVGSVGElement;
+	svg.setAttribute('width', '0');
+	svg.setAttribute('height', '0');
+	svg.setAttribute('aria-hidden', 'true');
+	svg.setAttribute('focusable', 'false');
+	// Collapse out of flow — some browsers still reserve a baseline for
+	// inline SVGs without explicit dimensions.
+	Object.assign(svg.style, {
+		position: 'absolute',
+		width: '0',
+		height: '0',
+		overflow: 'hidden',
+		pointerEvents: 'none',
+	} as Partial<CSSStyleDeclaration>);
+	const defs = document.createElementNS(SVG_NS, 'defs');
+	const filter = document.createElementNS(SVG_NS, 'filter') as SVGFilterElement;
+	filter.setAttribute('id', id);
+	// Use userSpaceOnUse coordinates so stdDeviation is in pixels, matching
+	// the EMU→px conversion that softEdge/biLevel callers do upstream.
+	filter.setAttribute('filterUnits', 'userSpaceOnUse');
+	filter.setAttribute('x', '-20%');
+	filter.setAttribute('y', '-20%');
+	filter.setAttribute('width', '140%');
+	filter.setAttribute('height', '140%');
+	defs.appendChild(filter);
+	svg.appendChild(defs);
+	return { svg, filter };
+}
+
+// Parse `#rrggbb` (or `#rgb`) into a 0..1 triple suitable for SVG
+// feColorMatrix / feComponentTransfer tableValues. Non-hex input is
+// tolerated — we fall back to black so bad data doesn't crash the render.
+export function hexTo01(hex: string): [number, number, number] {
+	let h = hex.trim();
+	if (h.startsWith('#')) h = h.slice(1);
+	if (h.length === 3) {
+		h = h.split('').map(c => c + c).join('');
+	}
+	if (h.length !== 6 || !/^[0-9a-fA-F]{6}$/.test(h)) {
+		return [0, 0, 0];
+	}
+	const r = parseInt(h.slice(0, 2), 16) / 255;
+	const g = parseInt(h.slice(2, 4), 16) / 255;
+	const b = parseInt(h.slice(4, 6), 16) / 255;
+	return [r, g, b];
+}
+
 // SVG paint description returned by `fillToSvgPaint`. Callers use `paint` as
 // the value of stroke/fill (e.g. `#rrggbb` for solids, `url(#id)` for defs)
 // and append every element in `defs` to their svg's <defs>.

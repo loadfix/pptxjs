@@ -375,6 +375,36 @@ for r, row in enumerate(data, start=1):
     for c, val in enumerate(row):
         tbl.cell(r, c).text = val
 
+# Second table on its own slide: exercises diagonal cell borders on merged
+# cells (Wave 6 A4). 2 rows x 3 cols; the top-left cell spans 2 columns and
+# carries an <a:lnTlToBr> diagonal. The fixture's purpose is to verify that
+# the SVG overlay stretches across the full merged rect via
+# preserveAspectRatio="none" on the <td colspan=2>.
+merged_diag_slide = prs.slides.add_slide(prs.slide_layouts[5])
+merged_diag_slide.shapes.title.text = "Merged-cell diagonals"
+md_rows, md_cols = 2, 3
+md_tbl = merged_diag_slide.shapes.add_table(
+    md_rows, md_cols, Inches(1), Inches(2), Inches(8), Inches(3)
+).table
+md_tbl.cell(0, 0).text = "spans 2 cols + diagonal"
+md_tbl.cell(0, 2).text = "right"
+md_tbl.cell(1, 0).text = "a"
+md_tbl.cell(1, 1).text = "b"
+md_tbl.cell(1, 2).text = "c"
+# Merge the top-left two cells horizontally.
+md_tbl.cell(0, 0).merge(md_tbl.cell(0, 1))
+# Inject <a:lnTlToBr> into the spanning <a:tc>'s <a:tcPr>.
+md_spanning_tc = md_tbl.cell(0, 0)._tc
+md_tcPr = md_spanning_tc.find(qn("a:tcPr"))
+if md_tcPr is None:
+    md_tcPr = etree.SubElement(md_spanning_tc, qn("a:tcPr"))
+md_tcPr.append(etree.fromstring(
+    "<a:lnTlToBr xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'"
+    " w='38100'>"
+    "<a:solidFill><a:srgbClr val='C0392B'/></a:solidFill>"
+    "</a:lnTlToBr>"
+))
+
 # Slide with a gradient-filled shape to exercise GradientFill render path.
 gradient_slide = prs.slides.add_slide(prs.slide_layouts[5])
 gradient_slide.shapes.title.text = "Gradient fill"
@@ -721,6 +751,52 @@ sldIdLst = prs.element.find(
 )
 if sldIdLst is not None and len(sldIdLst) > 0:
     sldIdLst[-1].set("show", "0")
+
+# Add <p:extLst> containing a <p14:sectionLst> so the fixture exercises the
+# Wave 5 A2 sections parser and the demo's sections drawer. Groups the 20
+# slides into four named sections with realistic ranges. Section uses the
+# PresentationML 2010 extensions namespace (p14). Each <p14:section> holds a
+# <p14:sldIdLst> whose <p14:sldId> entries reference the matching
+# <p:sldId>/@id values from the presentation's <p:sldIdLst>.
+P_NS_URI = "http://schemas.openxmlformats.org/presentationml/2006/main"
+P14_NS_URI = "http://schemas.microsoft.com/office/powerpoint/2010/main"
+SECTION_EXT_URI = "{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"
+
+# Collect the ordered sldId @id values (20 entries — last one is hidden).
+_sld_ids = [s.get("id") for s in sldIdLst]
+
+# Four sections covering the full deck, by @id. Names are chosen to echo
+# the content groups (title/basics, visuals, typography, misc).
+_section_defs = [
+    ("Introduction", _sld_ids[0:2]),
+    ("Visuals & Effects", _sld_ids[2:10]),
+    ("Typography & Text", _sld_ids[10:14]),
+    ("Tables, Charts & Extras", _sld_ids[14:]),
+]
+
+# Remove any existing <p:extLst> to stay idempotent across re-runs.
+for existing_ext in prs.element.findall(f"{{{P_NS_URI}}}extLst"):
+    prs.element.remove(existing_ext)
+
+extLst = etree.SubElement(prs.element, f"{{{P_NS_URI}}}extLst")
+ext = etree.SubElement(extLst, f"{{{P_NS_URI}}}ext", uri=SECTION_EXT_URI)
+# nsmap on the parent doesn't retroactively declare p14, so register it on
+# sectionLst itself via etree.SubElement with an explicit nsmap.
+sectionLst = etree.SubElement(
+    ext,
+    f"{{{P14_NS_URI}}}sectionLst",
+    nsmap={"p14": P14_NS_URI},
+)
+for idx, (name, ids) in enumerate(_section_defs):
+    sec = etree.SubElement(
+        sectionLst,
+        f"{{{P14_NS_URI}}}section",
+        name=name,
+        id=f"{{00000000-0000-0000-0000-{idx:012d}}}",
+    )
+    sldIdLst_p14 = etree.SubElement(sec, f"{{{P14_NS_URI}}}sldIdLst")
+    for sid in ids:
+        etree.SubElement(sldIdLst_p14, f"{{{P14_NS_URI}}}sldId", id=sid)
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 prs.save(OUT)

@@ -15,9 +15,11 @@ export interface Options {
 	// Include slides that PowerPoint has marked hidden (<p:sldId show="0">).
 	// Default false — hidden slides are dropped from the render list.
 	showHidden: boolean;
-	// When true, append a `.pptx-notes` div beneath each slide section
-	// containing the speaker-notes text. Default false — notes are metadata
-	// on the Presentation model and don't render unless explicitly asked for.
+	// When true, append a `.pptx-notes-slide` section beneath each slide
+	// section containing the notesSlide rendered through the same shape
+	// pipeline (bullets, colours, placeholders, images all honoured).
+	// Default false — notes are metadata on the Presentation model and
+	// don't render unless explicitly asked for.
 	renderNotes: boolean;
 	// When true, render each slide's comments as absolutely-positioned pin
 	// markers at the comment's (x,y) with hover tooltips showing the author
