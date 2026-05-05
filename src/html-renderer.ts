@@ -12,7 +12,7 @@ export class HtmlRenderer {
 
 		const slideW = emuToPx(presentation.slideSize.cx);
 		const slideH = emuToPx(presentation.slideSize.cy);
-		out.push(makeStyleNode(options.className, slideW, slideH));
+		out.push(makeStyleNode(options.className, slideW, slideH, options.responsive === true));
 
 		for (const slide of presentation.slides) {
 			const section = document.createElement("section");
@@ -24,11 +24,62 @@ export class HtmlRenderer {
 			for (const shape of slide.shapes) {
 				section.appendChild(renderShapeLike(shape, options.className));
 			}
-			out.push(section);
+
+			if (options.responsive) {
+				// Responsive mode: wrap each slide in a fluid container so
+				// the slide scales down on narrow viewports. The container
+				// reserves height via aspect-ratio (keeping the slide's
+				// native 16:9 / 4:3 ratio) while the <section> inside is
+				// transformed. The scale factor is set by attachResponsive
+				// after mount — pure CSS can't know the container width.
+				const wrapper = document.createElement("div");
+				wrapper.className = `${options.className}-slide-container`;
+				wrapper.style.aspectRatio = `${slideW} / ${slideH}`;
+				wrapper.appendChild(section);
+				out.push(wrapper);
+			} else {
+				out.push(section);
+			}
 		}
 
 		return out;
 	}
+}
+
+/**
+ * Attach a ResizeObserver to every `.pptx-slide-container` under `root` so
+ * each contained slide scales to the current container width. Called by
+ * renderAsync after the rendered nodes are appended to the DOM — the
+ * observer needs live layout sizes that only exist post-attach.
+ *
+ * Returns a disposer that disconnects the observer; callers that re-render
+ * into the same container should call it to avoid dangling observers.
+ */
+export function attachResponsive(root: HTMLElement, slideWidthPx: number, className: string): () => void {
+	const containers = root.querySelectorAll<HTMLElement>(`.${className}-slide-container`);
+	if (containers.length === 0 || typeof ResizeObserver === 'undefined') {
+		return () => {};
+	}
+	const applyScale = (container: HTMLElement) => {
+		const section = container.firstElementChild as HTMLElement | null;
+		if (!section) return;
+		const availableW = container.clientWidth;
+		// Never scale up past 1.0 — slides are authored at their native
+		// pixel size; upscaling blurs text. On a wide desktop the slide
+		// simply centers inside its container.
+		const scale = Math.min(1, availableW / slideWidthPx);
+		section.style.transform = `scale(${scale})`;
+	};
+	const ro = new ResizeObserver((entries) => {
+		for (const entry of entries) {
+			applyScale(entry.target as HTMLElement);
+		}
+	});
+	containers.forEach((c) => {
+		applyScale(c);
+		ro.observe(c);
+	});
+	return () => ro.disconnect();
 }
 
 function renderShapeLike(shape: ShapeLike, cls: string): HTMLElement {
@@ -281,9 +332,9 @@ function renderRun(run: Run): HTMLElement {
 	return el;
 }
 
-function makeStyleNode(cls: string, slideW: number, slideH: number): HTMLStyleElement {
+function makeStyleNode(cls: string, slideW: number, slideH: number, responsive: boolean): HTMLStyleElement {
 	const style = document.createElement("style");
-	style.textContent = `
+	let css = `
 .${cls}-slide {
 	position: relative;
 	width: ${slideW}px;
@@ -297,5 +348,31 @@ function makeStyleNode(cls: string, slideW: number, slideH: number): HTMLStyleEl
 	box-sizing: border-box;
 }
 `;
+	if (responsive) {
+		// Slide-container is the fluid outer box. The <section> inside keeps
+		// its native pixel size (the authoring coordinate system) and is
+		// scaled via transform. transform-origin top-left so the scaled
+		// slide sits flush with the container's top-left corner; the
+		// container's aspect-ratio reserves exactly the post-scale height.
+		// drop the outer slide margin (the container carries it) so the
+		// two layout layers don't compound.
+		css += `
+.${cls}-slide-container {
+	position: relative;
+	width: 100%;
+	max-width: ${slideW}px;
+	margin: 0 auto 24px;
+	overflow: hidden;
+	background: #fff;
+	box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+.${cls}-slide-container > .${cls}-slide {
+	transform-origin: top left;
+	margin: 0;
+	box-shadow: none;
+}
+`;
+	}
+	style.textContent = css;
 	return style;
 }
