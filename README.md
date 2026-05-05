@@ -66,7 +66,23 @@ Public fields of `Options` (all optional via `Partial<Options>`):
 - `showHidden: boolean` — include slides marked `<p:sldId show="0">`. Defaults to `false`.
 - `renderNotes: boolean` — append a `.pptx-notes` block beneath each slide. Defaults to `false`.
 - `renderComments: boolean` — render comment pins as absolutely-positioned markers. Defaults to `false`.
+- `convertEmf: boolean` — convert embedded EMF / WMF images to PNG via the [`emf-converter`](https://www.npmjs.com/package/emf-converter) package so brand logos and other vector assets render instead of being skipped. The library is loaded lazily; decks without any EMF/WMF pay no bundle weight. Defaults to `true`.
 - `onSlideError?: (slideIndex: number, err: unknown) => void` — called when a slide fails to parse. The slide still occupies its index in `presentation.slides` with `parseError` set and renders as a red error banner; this hook just lets hosts log / telemeter the failure.
+
+### EMF / WMF support in UMD builds
+
+The ESM build lazy-loads `emf-converter` automatically via a bundler-backed dynamic import. The UMD build (`dist/pptx-preview.js`) can't resolve the bare `emf-converter` specifier on its own — script-tag consumers who want metafile conversion must wire it in themselves:
+
+```html
+<script src="https://unpkg.com/jszip/dist/jszip.min.js"></script>
+<script src="pptx-preview.min.js"></script>
+<script type="module">
+  import * as emfConverter from 'https://esm.sh/emf-converter';
+  window.pptx.setEmfConverter(emfConverter);
+</script>
+```
+
+Without this call, EMF/WMF images on UMD builds are silently skipped (their `<img>` slots stay empty).
 
 ## Status
 
