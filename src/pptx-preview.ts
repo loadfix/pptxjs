@@ -25,6 +25,12 @@ export interface Options {
 	// markers at the comment's (x,y) with hover tooltips showing the author
 	// and body. Default false for the same reason as renderNotes.
 	renderComments: boolean;
+	// When true, append one or more `.pptx-handout-page` sections after the
+	// slide list, each showing the deck's slides as scaled-down thumbnails
+	// overlaid on the handoutMaster's chrome (header/footer/date/slideNum
+	// placeholders). Six slides per page in a 3×2 grid. Default false —
+	// handouts are a print-layout feature most viewers don't want inline.
+	renderHandouts: boolean;
 	// Optional callback invoked when a slide fails to parse. The slide still
 	// takes its slot in `presentation.slides` with `parseError` set and will
 	// render as a red banner, but hosts that want to surface/telemeter the
@@ -44,6 +50,7 @@ export const defaultOptions: Options = {
 	showHidden: false,
 	renderNotes: false,
 	renderComments: false,
+	renderHandouts: false,
 	onSlideError: undefined,
 };
 

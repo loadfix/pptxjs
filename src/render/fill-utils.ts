@@ -302,10 +302,31 @@ function svgPaintForBlip(
 // case is `{ kind: 'css', value: '<css-value>' }` which the caller assigns
 // to `element.style.background`. For blips with a crop, the fill can't be
 // expressed as a plain background and the caller must overlay an <img>.
+// For tiled blips, `tileInfo` carries the full <a:tile> descriptor so the
+// caller can pass it to `applyTileMetrics` once it has the element in hand.
 export type CssFillResult =
 	| { kind: 'css'; value: string }
-	| { kind: 'overlay'; src: string; srcRectPermille: { l: number; t: number; r: number; b: number } | null; tile: boolean }
+	| {
+		kind: 'overlay';
+		src: string;
+		srcRectPermille: { l: number; t: number; r: number; b: number } | null;
+		tile: boolean;
+		tileInfo: TileMetricsInput | null;
+	}
 	| null;
+
+// Shape-agnostic tile descriptor consumed by `applyTileMetrics`. Both
+// `BlipTile` (fill.ts) and `TileInfo` (presentation-parser.ts) structurally
+// satisfy this shape — the presentation-parser variant simply lacks
+// flip/algn, which this interface marks optional.
+export interface TileMetricsInput {
+	txPermille: number;
+	tyPermille: number;
+	sxPermille: number;
+	syPermille: number;
+	flip?: string | null;
+	algn?: string | null;
+}
 
 // Produce a structured description of how to paint `fill` onto an HTML box.
 // Returns null when the fill is absent or explicitly <a:noFill/>. Solid /
@@ -333,6 +354,7 @@ export function fillToCssBackground(
 				src: url,
 				srcRectPermille: fill.srcRectPermille,
 				tile: !fill.stretch,
+				tileInfo: fill.tile,
 			};
 		}
 		case 'pattern': {
@@ -428,6 +450,71 @@ export function applyCropOverlay(
 	img.style.objectFit = 'fill';
 	wrap.appendChild(img);
 	return img;
+}
+
+// Resolve an `<a:tile algn="...">` token to the CSS `background-position`
+// keyword pair PowerPoint would use. Returns null for ctr/unknown → caller
+// should fall back to the computed tx/ty px values.
+function algnToBgPosition(algn: string | null | undefined): string | null {
+	switch (algn) {
+		case 'tl': return 'left top';
+		case 't':  return 'center top';
+		case 'tr': return 'right top';
+		case 'l':  return 'left center';
+		case 'ctr': return 'center center';
+		case 'r':  return 'right center';
+		case 'bl': return 'left bottom';
+		case 'b':  return 'center bottom';
+		case 'br': return 'right bottom';
+		default: return null;
+	}
+}
+
+// Asynchronously probe the tile source image's natural pixel size so we can
+// translate OOXML <a:tile> offsets (per-mille of source) into CSS pixel
+// values. The sync render contract is preserved — the element renders with
+// defaults first, then gets patched in place when the Image() load resolves.
+// `algn` (when non-null and non-'ctr') overrides tx/ty with a keyword
+// position (tl/t/tr/l/r/bl/b/br), per ECMA-376. `flip` has no CSS analogue;
+// TODO: emulate via SVG pattern transform when flipping matters.
+export function applyTileMetrics(
+	el: HTMLElement,
+	src: string,
+	tile: TileMetricsInput,
+): void {
+	// Centered alignment can be applied immediately — it doesn't need the
+	// tile's natural dimensions. Everything else needs the async probe.
+	const algnPos = algnToBgPosition(tile.algn);
+	if (algnPos) {
+		el.style.backgroundPosition = algnPos;
+	}
+	const img = new Image();
+	img.onload = () => {
+		const srcW = img.naturalWidth;
+		const srcH = img.naturalHeight;
+		if (srcW <= 0 || srcH <= 0) return;
+		// sx/sy are per-mille scales of the source image. Resulting px size
+		// is what browsers need for `background-size`.
+		const sx = tile.sxPermille ?? PERMILLE;
+		const sy = tile.syPermille ?? PERMILLE;
+		const tileW = (srcW * sx) / PERMILLE;
+		const tileH = (srcH * sy) / PERMILLE;
+		el.style.backgroundSize = `${tileW.toFixed(2)}px ${tileH.toFixed(2)}px`;
+		// `algn` wins over tx/ty when both are set — skip the translate
+		// assignment so the algnPos keyword remains.
+		if (!algnPos) {
+			const txPx = (tileW * (tile.txPermille ?? 0)) / PERMILLE;
+			const tyPx = (tileH * (tile.tyPermille ?? 0)) / PERMILLE;
+			el.style.backgroundPosition = `${txPx.toFixed(2)}px ${tyPx.toFixed(2)}px`;
+		}
+		// TODO: `flip` (x / y / xy) has no CSS background equivalent. An
+		// SVG <pattern patternTransform> overlay would work, but decks that
+		// rely on tile-flip are vanishingly rare; leaving as TODO.
+	};
+	// Silent failure — the background just stays at its default (top-left,
+	// auto-sized, non-scaled). A broken image is no worse than what we had.
+	img.onerror = () => { /* noop */ };
+	img.src = src;
 }
 
 // Build an inline SVG for a subset of OOXML pattern presets. Returns null

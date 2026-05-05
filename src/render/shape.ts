@@ -9,6 +9,7 @@ import {
 	fillToCssBackground,
 	fillToSvgPaint,
 	applyCropOverlay,
+	applyTileMetrics,
 	lineDashToCss,
 	svgDashArray,
 	createInlineFilter,
@@ -212,12 +213,17 @@ function applyBoxFill(el: HTMLElement, shape: Shape, embedUrls: Map<string, stri
 			// sub-rectangle; the overlay wrapper is overflow:hidden and the
 			// <img> is positioned/scaled to expose only the visible crop.
 			if (bg.tile) {
-				// TODO: tile mode still uses background-repeat (same caveat
-				// as before — srcRect can't be honoured for tiling in CSS).
+				// Tile mode — srcRect still can't be honoured under
+				// background-repeat (CSS gives no way to crop the tile
+				// source), but tx/ty/sx/sy/algn go through applyTileMetrics
+				// once the image's natural dimensions are known.
 				el.style.backgroundImage = `url("${bg.src.replace(/"/g, '\\"')}")`;
 				el.style.backgroundRepeat = 'repeat';
 				el.style.backgroundPosition = 'top left';
 				el.style.backgroundSize = 'auto';
+				if (bg.tileInfo) {
+					applyTileMetrics(el, bg.src, bg.tileInfo);
+				}
 			} else {
 				if (!el.style.position) el.style.position = 'absolute';
 				applyCropOverlay(el, bg.src, bg.srcRectPermille);
@@ -225,18 +231,32 @@ function applyBoxFill(el: HTMLElement, shape: Shape, embedUrls: Map<string, stri
 		}
 	}
 	// Line/stroke. The CSS border path can only carry a flat color; for
-	// non-solid line fills we fall back to a best-effort approximation:
-	// gradient → first stop, pattern → fg color, blip → a neutral grey
-	// (blips can't be painted into a CSS border — TODO: use an SVG overlay
-	// when blip strokes on plain rectangles matter enough). Shapes that go
-	// through the SVG path instead pick up full gradient/pattern/blip
-	// strokes via fillToSvgPaint.
+	// non-solid line fills on a non-degenerate plain box we overlay an
+	// inline SVG <rect> so gradient/pattern/blip strokes paint through
+	// `stroke="url(#id)"`. Solid strokes keep the CSS border path so the
+	// DOM shape (a div with a border) is unchanged. Degenerate lines still
+	// collapse into the background-band fallback below.
+	const isHLine = shape.cy === 0;
+	const isVLine = shape.cx === 0;
+	const lineFill = shape.line?.fill ?? null;
+	const isNonSolidPaintFill = lineFill != null
+		&& lineFill.kind !== 'solid'
+		&& lineFill.kind !== 'none';
+	if (shape.line && isNonSolidPaintFill && !isHLine && !isVLine) {
+		const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;
+		const overlay = buildStrokeOnlySvgOverlay(shape.line, lineFill, widthPx, embedUrls);
+		if (overlay) {
+			// Make sure the child SVG can position absolutely inside the box.
+			if (!el.style.position) el.style.position = 'absolute';
+			el.appendChild(overlay);
+			return;
+		}
+	}
+
 	let lineColor = approxSolidColorFromFill(shape.line?.fill ?? null);
 	if (lineColor == null && shape.line?.fill?.kind === 'blip') lineColor = '#808080';
 	if (shape.line && lineColor) {
 		const widthPx = shape.line.widthEmu != null ? Math.max(emuToPx(shape.line.widthEmu), 0.5) : 1;
-		const isHLine = shape.cy === 0;
-		const isVLine = shape.cx === 0;
 		if (isHLine || isVLine) {
 			el.style.background = lineColor;
 			if (isHLine) el.style.height = `${widthPx}px`;
@@ -257,6 +277,64 @@ function applyBoxFill(el: HTMLElement, shape: Shape, embedUrls: Map<string, stri
 			el.style.border = `${effectiveWidth}px ${borderStyle} ${lineColor}`;
 		}
 	}
+}
+
+// Build an inline SVG overlay that paints only a <rect> stroke using the
+// proper paint server (gradient/pattern/blip) — used for plain-box shapes
+// whose stroke can't be expressed as a CSS border: color. The rect hugs
+// the shape's full bounds; stroke width uses pixels via
+// vector-effect="non-scaling-stroke" so it doesn't skew with SVG scaling.
+// The overlay purposefully has fill="none" — the shape div underneath
+// keeps providing the background fill.
+function buildStrokeOnlySvgOverlay(
+	line: LineStyle,
+	lineFill: NonNullable<LineStyle['fill']>,
+	widthPx: number,
+	embedUrls: Map<string, string>,
+): SVGSVGElement | null {
+	const strokePaint = fillToSvgPaint(lineFill, embedUrls, 'pptxjs-stroke');
+	if (!strokePaint) return null;
+	const svg = document.createElementNS(SVG_NS, 'svg');
+	svg.setAttribute('width', '100%');
+	svg.setAttribute('height', '100%');
+	svg.setAttribute('preserveAspectRatio', 'none');
+	Object.assign(svg.style, {
+		position: 'absolute',
+		left: '0',
+		top: '0',
+		width: '100%',
+		height: '100%',
+		// The text body wrapper sits above this overlay in DOM order and
+		// must still receive clicks/selection — the SVG is a visual layer
+		// only.
+		pointerEvents: 'none',
+	} as Partial<CSSStyleDeclaration>);
+	if (strokePaint.defs.length > 0) {
+		const defs = document.createElementNS(SVG_NS, 'defs');
+		for (const d of strokePaint.defs) defs.appendChild(d);
+		svg.appendChild(defs);
+	}
+	const rect = document.createElementNS(SVG_NS, 'rect');
+	rect.setAttribute('x', '0');
+	rect.setAttribute('y', '0');
+	rect.setAttribute('width', '100%');
+	rect.setAttribute('height', '100%');
+	rect.setAttribute('fill', 'none');
+	rect.setAttribute('stroke', strokePaint.paint);
+	rect.setAttribute('stroke-width', String(widthPx));
+	rect.setAttribute('vector-effect', 'non-scaling-stroke');
+	// Carry over dash/linecap/linejoin if the line specifies them. Markers
+	// are not meaningful on a closed rectangle, so skip applyStrokeStyling
+	// and handle the subset inline.
+	const dashArr = svgDashArray(line.dash);
+	if (dashArr) rect.setAttribute('stroke-dasharray', dashArr);
+	if (line.cap) {
+		const capMap = { flat: 'butt', sq: 'square', rnd: 'round' } as const;
+		rect.setAttribute('stroke-linecap', capMap[line.cap]);
+	}
+	if (line.join) rect.setAttribute('stroke-linejoin', line.join);
+	svg.appendChild(rect);
+	return svg;
 }
 
 // True when the line has a non-'none' head or tail end marker. The parser
