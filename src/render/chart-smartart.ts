@@ -26,6 +26,9 @@ export function renderChartFallback(shape: ChartFallbackShape, cls: string): HTM
 	wrap.setAttribute("data-kind", "chart");
 	if (shape.chartType) wrap.setAttribute("data-chart-type", shape.chartType);
 	Object.assign(wrap.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
+	// Stable data-* hook for the conformance harness. W8-A3 will layer
+	// data-chart-type on top once the chart XML is parsed.
+	wrap.setAttribute("data-kind", "chart");
 	if (shape.src) {
 		const img = document.createElement("img");
 		img.src = shape.src;
@@ -46,6 +49,8 @@ export function renderSmartArtFallback(shape: SmartArtFallbackShape, cls: string
 	wrap.className = scoped === "pptx-smartart" ? "pptx-smartart" : `${scoped} pptx-smartart`;
 	wrap.setAttribute("data-kind", "smartart");
 	Object.assign(wrap.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
+	// Stable data-* hook for the conformance harness.
+	wrap.setAttribute("data-kind", "smartart");
 	applyPlaceholderStyle(wrap, "[SmartArt]");
 	return wrap;
 }
