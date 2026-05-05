@@ -606,6 +606,15 @@ function applyStrokeStyling(svg: SVGSVGElement, path: SVGPathElement, line: Line
 
 // Translate w/len size hints onto a scale factor multiplied against stroke
 // width. Missing means "medium" per the DrawingML default.
+//
+// DrawingML defines `w` (sm|med|lg) and `len` (sm|med|lg) as quantised
+// enums without a spec-mandated pixel mapping; PowerPoint itself picks
+// values that track stroke width. The 1.5x / 2x / 2.5x multipliers here
+// are the commonly-cited approximation used by other DrawingML renderers
+// (including python-pptx's docs and LibreOffice's emfio importer) and
+// match PowerPoint's visual output closely enough at typical stroke
+// widths. Calibrated against DrawingML arrow samples; no further tweak
+// planned unless a specific deck regresses.
 function endSizeFactor(hint: string | null): number {
 	switch (hint) {
 		case 'sm': return 1.5;
