@@ -1,0 +1,84 @@
+# Re-runs the conformance matrix for this library on every push to master,
+# then uploads the per-feature result JSONs as a GitHub Actions artifact.
+#
+# The corpus's diff-reports workflow downloads the latest artifact from
+# each library (artifact name: `conformance-results-pptxjs`) and layers
+# them into its results tree before rendering the matrix page — no
+# cross-repo writes required.
+#
+# Cross-repo reads use `actions/checkout` with `repository:` and the
+# default `GITHUB_TOKEN` (contents: read).  No PAT needed for this
+# direction of the pipeline.
+#
+# `test:conformance` itself writes per-feature JSON verdicts to
+# ../ooxml-validate/conformance/results/pptxjs/pptx/ as a side-effect,
+# so we just upload that directory after the run.  Unlike docxjs and
+# xlsxjs, pptxjs's test:conformance script does not run `build` first
+# and dist/ is gitignored, so we build explicitly.
+name: Conformance
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out pptxjs
+        uses: actions/checkout@v4
+        with:
+          path: pptxjs
+
+      - name: Check out ooxml-reference-corpus (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: loadfix/ooxml-reference-corpus
+          path: ooxml-reference-corpus
+
+      - name: Check out ooxml-validate (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: loadfix/ooxml-validate
+          path: ooxml-validate
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: pptxjs/package-lock.json
+
+      - name: Install npm deps
+        working-directory: pptxjs
+        run: npm ci
+
+      - name: Build bundle
+        working-directory: pptxjs
+        run: npm run build
+
+      - name: Install Playwright browsers
+        working-directory: pptxjs
+        run: npx playwright install --with-deps chromium
+
+      - name: Run conformance suite (writes result JSONs)
+        working-directory: pptxjs
+        continue-on-error: true
+        run: npm run test:conformance
+
+      - name: Upload conformance results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-results-pptxjs
+          path: ooxml-validate/conformance/results/pptxjs/
+          if-no-files-found: warn
+          retention-days: 30
