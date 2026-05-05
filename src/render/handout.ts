@@ -4,6 +4,7 @@ import {
 	emptyPlaceholderMap,
 	SlideParseContext,
 } from '../presentation-parser';
+import { parseSlideBackground } from '../background';
 import { emuToPx } from './geom';
 import { renderShapeLike } from './dispatch';
 
@@ -81,6 +82,16 @@ export function renderHandoutPages(
 		section.dataset.handoutPage = String(pageIdx);
 		section.style.width = `${pageW}px`;
 		section.style.height = `${pageH}px`;
+
+		// Handout master background: apply the master's <p:cSld><p:bg> solid
+		// fill to each page so an author-supplied printed background shows.
+		// Non-solid fills (gradient/image) return null and the page stays on
+		// the stylesheet default (white). We re-parse per page rather than
+		// caching because this runs at most ceil(N/6) times.
+		const bg = parseSlideBackground(master.doc, master.clrMap, master.theme);
+		if (bg && bg !== 'inherit' && bg.kind === 'solid') {
+			section.style.background = bg.colorHex;
+		}
 
 		// Chrome first (behind), thumbnails on top.
 		if (firstSlide) {
