@@ -9,6 +9,7 @@ import {
 	supportsSvgFilters,
 	hexTo01,
 } from './fill-utils';
+import { addSharedClass } from '../shared-classes';
 
 // Per-mille denominator used throughout OOXML blip-effect attributes
 // (srcRect/alphaModFix/lum/biLevel/tile). 100000 = 100%.
@@ -17,6 +18,10 @@ const PERMILLE = 100000;
 export function renderPic(pic: PicShape, cls: string, hyperlinkUrls: Map<string, string>): HTMLElement {
 	const wrap = document.createElement("div");
 	wrap.className = `${cls}-pic`;
+	// Cross-format shared class — the outer wrapper gets `.oox-image` so
+	// manifest selectors targeting "a rendered image, any format" can use
+	// a single selector.
+	addSharedClass(wrap, "image");
 	Object.assign(wrap.style, positionStyle(pic.x, pic.y, pic.cx, pic.cy));
 	Object.assign(wrap.style, transformStyle(pic.rotation60k, pic.flipH, pic.flipV));
 

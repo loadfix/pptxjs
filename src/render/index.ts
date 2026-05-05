@@ -7,6 +7,7 @@ import { renderShapeLike } from './dispatch';
 import { renderNotesBlock, renderCommentMarkers } from './notes';
 import { renderHandoutPages } from './handout';
 import { wrapResponsive } from './responsive';
+import { addSharedClass } from '../shared-classes';
 
 export class HtmlRenderer {
 	async render(presentation: Presentation, options: Options): Promise<Node[]> {
@@ -24,6 +25,9 @@ export class HtmlRenderer {
 		for (const slide of presentation.slides) {
 			const section = document.createElement("section");
 			section.className = `${options.className}-slide`;
+			// Cross-format shared class (see shared-classes.ts). A PPTX
+			// slide, DOCX page, and XLSX sheet all carry `.oox-page`.
+			addSharedClass(section, "page");
 			section.dataset.slideIndex = String(slide.index);
 			// Intra-deck hyperlinks (`#slide-N`) use this id as their target.
 			section.id = `slide-${slide.index}`;
