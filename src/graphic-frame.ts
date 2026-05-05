@@ -15,6 +15,7 @@
 import { OpenXmlPackage, Relationship, resolveRelTarget } from './open-xml-package';
 import { imageMimeFromPath } from './mime';
 import type { ShapeLike, SlideParseContext } from './presentation-parser';
+import { parseChart, type ChartModel } from './chart-parser';
 
 // Relationship types used by chart / SmartArt frames.
 export const CHART_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
@@ -50,6 +51,11 @@ export interface ChartFallbackShape {
 	// plot-area series element (e.g. "columnClustered", "line", "pie"). Null
 	// when the chart part can't be found or the element is unrecognised.
 	chartType: string | null;
+	// Parsed ChartModel for the chart families we render natively
+	// (bar/column/line/pie/doughnut). Null when the chart uses an
+	// unsupported family or its part couldn't be read; callers fall back
+	// to the "[Chart]" placeholder in that case.
+	model: ChartModel | null;
 	name: string | null;
 	title: string | null;
 	alt: string | null;
@@ -134,6 +140,19 @@ export async function readChartType(
 		if (mapped) return mapped;
 	}
 	return null;
+}
+
+// Load the chart part and convert it into a ChartModel for inline SVG
+// rendering. Returns null when the part is missing, malformed, or uses a
+// chart family outside our supported set — the caller should keep the
+// "[Chart]" placeholder in that case.
+export async function readChartModel(
+	pkg: OpenXmlPackage,
+	chartPartPath: string,
+): Promise<ChartModel | null> {
+	const doc = await pkg.loadXml(chartPartPath);
+	if (!doc) return null;
+	return parseChart(doc);
 }
 
 function firstChildNS(parent: Element, ns: string, localName: string): Element | null {
