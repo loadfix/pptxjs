@@ -15,7 +15,16 @@ import { positionStyle } from './geom';
 
 export function renderChartFallback(shape: ChartFallbackShape, cls: string): HTMLElement {
 	const wrap = document.createElement("div");
-	wrap.className = `${cls}-chart`;
+	// Classes: the pptxjs-scoped "<cls>-chart" used for internal positioning
+	// styles, plus the stable "pptx-chart" tag consumers can select on.
+	// When the caller configured cls="pptx" the two collapse into a single
+	// token, so we de-duplicate to keep class output tidy. data-kind mirrors
+	// the class for selector-only consumers; data-chart-type carries the
+	// probed series type when known.
+	const scoped = `${cls}-chart`;
+	wrap.className = scoped === "pptx-chart" ? "pptx-chart" : `${scoped} pptx-chart`;
+	wrap.setAttribute("data-kind", "chart");
+	if (shape.chartType) wrap.setAttribute("data-chart-type", shape.chartType);
 	Object.assign(wrap.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
 	if (shape.src) {
 		const img = document.createElement("img");
@@ -33,7 +42,9 @@ export function renderChartFallback(shape: ChartFallbackShape, cls: string): HTM
 
 export function renderSmartArtFallback(shape: SmartArtFallbackShape, cls: string): HTMLElement {
 	const wrap = document.createElement("div");
-	wrap.className = `${cls}-smartart`;
+	const scoped = `${cls}-smartart`;
+	wrap.className = scoped === "pptx-smartart" ? "pptx-smartart" : `${scoped} pptx-smartart`;
+	wrap.setAttribute("data-kind", "smartart");
 	Object.assign(wrap.style, positionStyle(shape.x, shape.y, shape.cx, shape.cy));
 	applyPlaceholderStyle(wrap, "[SmartArt]");
 	return wrap;

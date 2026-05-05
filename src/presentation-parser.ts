@@ -776,6 +776,7 @@ function parseGraphicFrame(gf: Element, ctx: SlideParseContext): ShapeLike | nul
 			x, y, cx, cy,
 			chartRId,
 			src: null,
+			chartType: null,
 			name: nv.name,
 			title: nv.title,
 			alt: nv.descr,
