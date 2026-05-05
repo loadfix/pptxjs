@@ -7,17 +7,20 @@ import {
 	parseShapesFromSpTree,
 	Slide,
 	SlideSize,
+	Section,
 	ShapeLike,
 	buildPlaceholderMap,
 	emptyPlaceholderMap,
 	emptyMasterTextStyles,
 	parseMasterTextStyles,
+	parseNotesStyle,
 	extractHfPlaceholderText,
 	emptyHeaderFooterFlags,
 	PlaceholderMap,
 	MasterTextStyles,
 	SlideParseContext,
 } from './presentation-parser';
+import { LevelStyles } from './text-style';
 import {
 	CHART_REL_TYPE,
 	findChartFallbackImage,
@@ -45,6 +48,16 @@ const THEME_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/re
 const IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 const SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
+const NOTES_MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster";
+const HANDOUT_MASTER_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/handoutMaster";
+
+// PresentationML 2010 extensions namespace. Sections (<p14:sectionLst>) are
+// PowerPoint 2010+ metadata carried under the standard <p:extLst> extension
+// bag in presentation.xml.
+const P14_NS = "http://schemas.microsoft.com/office/powerpoint/2010/main";
+// <p:ext uri="…"> value that tags the sectionLst extension. Other extensions
+// (e.g. modifyVerifier) live under different URIs in the same extLst.
+const SECTION_LST_EXT_URI = "{521415D9-36F7-43E2-AB2F-B90AF26B5E84}";
 
 // Whitelist of URL schemes that may appear in a rendered <a href>. Everything
 // else — `javascript:`, `data:`, `file:`, `vbscript:`, custom schemes — is
@@ -64,13 +77,23 @@ export function isSafeHyperlinkHref(href: string): boolean {
 	return SAFE_HYPERLINK_SCHEMES.has(m[1].toLowerCase() + ":");
 }
 
-interface MasterBundle {
+export interface MasterBundle {
 	placeholders: PlaceholderMap;
 	textStyles: MasterTextStyles;
 	clrMap: ClrMap;
 	theme: ThemeColors;
 	path: string | null;
 	doc: Document | null;
+}
+
+// Notes master bundle. Same shape as MasterBundle but carries its own
+// `notesStyle` (the notesMaster's <p:notesStyle>, which plays the role
+// bodyStyle does for slide masters) alongside the regular textStyles.
+// Handout masters use the plain MasterBundle — they have no analogous text
+// styles element, but we still want placeholders/theme/clrMap available for
+// a future print-handouts pass.
+export interface NotesMasterBundle extends MasterBundle {
+	notesStyle: LevelStyles;
 }
 
 interface LayoutBundle {
@@ -84,7 +107,7 @@ interface LayoutBundle {
 
 export class Presentation {
 	slides: Slide[] = [];
-	slideSize: SlideSize = { cx: 9144000, cy: 6858000 };
+	slideSize: SlideSize = { cx: 9144000, cy: 6858000, type: null, orient: null };
 	// rId → resolved URL, merged across all parts (slide/layout/master).
 	embedUrls: Map<string, string> = new Map();
 	// Populated once at load time from ppt/tableStyles.xml. Null when the
@@ -93,6 +116,20 @@ export class Presentation {
 	// <p:presentation firstSlideNum="N"> — the 1-based index to display for
 	// the first slide. Defaults to 1 when absent.
 	firstSlideNum: number = 1;
+	// PowerPoint "Sections" grouping (<p14:sectionLst> under <p:extLst>).
+	// Empty when the deck carries no sections — the common case. Hosts can
+	// use this to render a section-aware navigator / ToC. Purely metadata;
+	// renderer doesn't consume it.
+	sections: Section[] = [];
+	// Notes master — parsed once from `ppt/notesMasters/notesMaster1.xml` (if
+	// declared in the presentation's rels). Carries placeholders + clrMap +
+	// theme + the notesStyle text defaults that speaker-notes rendering
+	// inherits. Null when the deck has no notesMaster.
+	notesMaster: NotesMasterBundle | null = null;
+	// Handout master — parsed from `ppt/handoutMasters/handoutMaster1.xml`
+	// when present. Currently only loaded (not yet rendered) so future
+	// print-handouts support has the chrome/theme context ready.
+	handoutMaster: MasterBundle | null = null;
 
 	static async load(data: Blob | any, _parser: unknown, options: Options): Promise<Presentation> {
 		const pkg = await OpenXmlPackage.load(data, { trimXmlDeclaration: options.trimXmlDeclaration });
@@ -116,15 +153,46 @@ export class Presentation {
 
 		const sldSzEl = presDoc.getElementsByTagNameNS(A_NS.p, "sldSz")[0];
 		if (sldSzEl) {
+			const typeAttr = sldSzEl.getAttribute("type");
+			const orientAttr = sldSzEl.getAttribute("orient");
+			// orient is a closed ECMA-376 enum (landscape | portrait); anything
+			// else is treated as "absent" rather than propagating garbage.
+			const orient: 'landscape' | 'portrait' | null =
+				orientAttr === 'landscape' || orientAttr === 'portrait' ? orientAttr : null;
 			pres.slideSize = {
 				cx: Number(sldSzEl.getAttribute("cx")) || pres.slideSize.cx,
 				cy: Number(sldSzEl.getAttribute("cy")) || pres.slideSize.cy,
+				type: typeAttr || null,
+				orient,
 			};
 		}
 
 		const rels = await pkg.loadRelationships(presPath);
-		const sldIdEls = Array.from(presDoc.getElementsByTagNameNS(A_NS.p, "sldId"));
+		// Load the notes/handout masters declared directly on the presentation.
+		// These parts carry the theme + placeholder + text-style chrome that
+		// speaker-notes / print-handouts rendering should inherit. Each is a
+		// single optional part — loader helpers return null when absent.
+		pres.notesMaster = await loadNotesMaster(pkg, presPath, rels);
+		pres.handoutMaster = await loadHandoutMaster(pkg, presPath, rels);
+
+		// Only direct children of <p:sldIdLst> — there may be other <p:sldId>
+		// elements nested under <p14:sectionLst> (one per section entry) that
+		// use the same local name in the p14 namespace; we don't want those,
+		// but the namespace filter below handles it. Still, scope defensively
+		// to sldIdLst's direct children to avoid any future ambiguity.
+		const sldIdLstEl = presDoc.getElementsByTagNameNS(A_NS.p, "sldIdLst")[0] ?? null;
+		const sldIdEls = sldIdLstEl
+			? Array.from(sldIdLstEl.children).filter(
+				(c) => c.namespaceURI === A_NS.p && c.localName === "sldId",
+			)
+			: [];
 		const slidePaths: string[] = [];
+		// p:sldId/@id (the "slide identifier", e.g. 256) → 0-based index in the
+		// filtered slidePaths / pres.slides array. Used below to resolve the
+		// <p14:sldId id="…"> references inside <p14:section>. Hidden slides
+		// that were skipped for rendering are intentionally absent from this
+		// map so a section that references them gets those entries omitted.
+		const sldIdToIndex = new Map<string, number>();
 		for (const el of sldIdEls) {
 			// Hidden slide filter: <p:sldId show="0"> is hidden. Per the schema,
 			// a missing `show` attr is visible (true). Opt-in override via
@@ -134,8 +202,15 @@ export class Presentation {
 			if (!rid) continue;
 			const rel = rels.get(rid);
 			if (!rel) continue;
+			const sldIdAttr = el.getAttribute("id");
+			if (sldIdAttr) sldIdToIndex.set(sldIdAttr, slidePaths.length);
 			slidePaths.push(resolveRelTarget(presPath, rel.target));
 		}
+
+		// <p14:sectionLst> under <p:extLst>. Each <p14:section> groups a
+		// contiguous run of slides (by sldId reference, not by position) with
+		// a display name. Purely metadata — rendering is unaffected.
+		pres.sections = parseSections(presDoc, sldIdToIndex);
 		// Map each slide's package path → its 0-based index, used to translate
 		// slide-to-slide relationships (Target="../slides/slide3.xml") to the
 		// `#slide-N` anchor fragment the renderer emits on <section>.
@@ -535,6 +610,115 @@ async function resolveGraphicFrameFallbacks(
 		out.push(s);
 	}
 	return out;
+}
+
+// Walk <p:extLst> looking for the sectionLst extension and extract the
+// section records. `sldIdToIndex` maps each p:sldId/@id to its 0-based
+// position in the filtered slide list; sections carrying references to
+// hidden / unknown slides simply get those entries dropped.
+function parseSections(presDoc: Document, sldIdToIndex: Map<string, number>): Section[] {
+	// Direct child search under the root <p:presentation> — extLst can appear
+	// at multiple levels in the XML, but sections live specifically in the
+	// presentation-level one.
+	const root = presDoc.documentElement;
+	const extLst = findChild(root, A_NS.p, "extLst");
+	if (!extLst) return [];
+	const extEls = Array.from(extLst.children).filter(
+		(c) => c.namespaceURI === A_NS.p && c.localName === "ext",
+	);
+	const sectionExt = extEls.find((e) => e.getAttribute("uri") === SECTION_LST_EXT_URI);
+	if (!sectionExt) return [];
+	const sectionLst = findChild(sectionExt, P14_NS, "sectionLst");
+	if (!sectionLst) return [];
+
+	const sections: Section[] = [];
+	for (const sec of Array.from(sectionLst.children)) {
+		if (sec.namespaceURI !== P14_NS || sec.localName !== "section") continue;
+		const id = sec.getAttribute("id") ?? "";
+		const name = sec.getAttribute("name") ?? "";
+		const sldIdLst = findChild(sec, P14_NS, "sldIdLst");
+		const slideIndices: number[] = [];
+		if (sldIdLst) {
+			for (const sid of Array.from(sldIdLst.children)) {
+				if (sid.namespaceURI !== P14_NS || sid.localName !== "sldId") continue;
+				const idAttr = sid.getAttribute("id");
+				if (!idAttr) continue;
+				const idx = sldIdToIndex.get(idAttr);
+				if (idx !== undefined) slideIndices.push(idx);
+			}
+		}
+		sections.push({ id, name, slideIndices });
+	}
+	return sections;
+}
+
+function findChild(parent: Element, ns: string, localName: string): Element | null {
+	for (const c of Array.from(parent.children)) {
+		if (c.namespaceURI === ns && c.localName === localName) return c;
+	}
+	return null;
+}
+
+// Shared loader for a single notes / handout / slide master part. Resolves
+// the part's own theme rel, builds the placeholder map + textStyles, and
+// parses the clrMap declared inside the part. Returns null when the part
+// itself is missing or unreadable so callers can treat absence as "no such
+// master" (distinct from "present but empty").
+async function loadMasterBundle(
+	pkg: OpenXmlPackage,
+	containerPath: string,
+	rels: Map<string, import('./open-xml-package').Relationship>,
+	relType: string,
+): Promise<{ bundle: MasterBundle; doc: Document } | null> {
+	let masterPath: string | null = null;
+	for (const r of rels.values()) {
+		if (r.type === relType) {
+			masterPath = resolveRelTarget(containerPath, r.target);
+			break;
+		}
+	}
+	if (!masterPath) return null;
+	const masterDoc = await pkg.loadXml(masterPath);
+	if (!masterDoc) return null;
+
+	let theme = emptyThemeColors();
+	const masterRels = await pkg.loadRelationships(masterPath);
+	for (const r of masterRels.values()) {
+		if (r.type !== THEME_REL_TYPE) continue;
+		const themePath = resolveRelTarget(masterPath, r.target);
+		const themeDoc = await pkg.loadXml(themePath);
+		if (themeDoc) theme = parseTheme(themeDoc);
+		break;
+	}
+
+	const bundle: MasterBundle = {
+		placeholders: buildPlaceholderMap(masterDoc),
+		textStyles: parseMasterTextStyles(masterDoc),
+		clrMap: parseClrMap(masterDoc),
+		theme,
+		path: masterPath,
+		doc: masterDoc,
+	};
+	return { bundle, doc: masterDoc };
+}
+
+async function loadNotesMaster(
+	pkg: OpenXmlPackage,
+	presPath: string,
+	presRels: Map<string, import('./open-xml-package').Relationship>,
+): Promise<NotesMasterBundle | null> {
+	const loaded = await loadMasterBundle(pkg, presPath, presRels, NOTES_MASTER_REL_TYPE);
+	if (!loaded) return null;
+	return { ...loaded.bundle, notesStyle: parseNotesStyle(loaded.doc) };
+}
+
+async function loadHandoutMaster(
+	pkg: OpenXmlPackage,
+	presPath: string,
+	presRels: Map<string, import('./open-xml-package').Relationship>,
+): Promise<MasterBundle | null> {
+	const loaded = await loadMasterBundle(pkg, presPath, presRels, HANDOUT_MASTER_REL_TYPE);
+	return loaded ? loaded.bundle : null;
 }
 
 // Translate a `ppaction://hlinkshowjump?jump=...` URI to a `#slide-N` fragment

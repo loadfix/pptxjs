@@ -5,7 +5,7 @@
 
 import { A_NS } from './namespaces';
 import { firstChildNS } from './xml-utils';
-import { ColorMods } from './color-math';
+import { ColorMods, withAlphaHex } from './color-math';
 import { ClrMap, ThemeColors, resolveColorElement } from './theme';
 
 export interface RunStyle {
@@ -242,7 +242,10 @@ export interface BulletMarker {
 export type BulletDef =
 	| { kind: "none" }
 	| ({ kind: "char"; char: string } & BulletMarker)
-	| ({ kind: "autoNum"; type: string; startAt: number | null } & BulletMarker);
+	| ({ kind: "autoNum"; type: string; startAt: number | null } & BulletMarker)
+	// Image bullet — <a:buBlip><a:blip r:embed="rId"/></a:buBlip>. `rId`
+	// resolves through the slide/master/layout embedUrls map at render time.
+	| ({ kind: "blip"; rId: string } & BulletMarker);
 
 export function emptyParaStyle(): ParaStyle {
 	return {
@@ -354,7 +357,7 @@ export function parseParaProps(
 		const colorEl = firstColorChild(buClr);
 		if (colorEl) {
 			const r = resolveColorElement(colorEl, clrMap ?? {}, theme);
-			if (r) bulletColorHex = r.colorHex;
+			if (r && r.colorHex) bulletColorHex = withAlphaHex(r.colorHex, r.alpha);
 		}
 	}
 	const buFont = firstChildNS(el, A_NS.a, "buFont");
@@ -364,12 +367,13 @@ export function parseParaProps(
 	}
 
 	// Bullet markers. Only one of these is set per paragraph; check in
-	// preference order: explicit none, char, autoNum.
+	// preference order: explicit none, char, autoNum, blip.
 	if (firstChildNS(el, A_NS.a, "buNone")) {
 		s.bullet = { kind: "none" };
 	} else {
 		const buChar = firstChildNS(el, A_NS.a, "buChar");
 		const buAutoNum = firstChildNS(el, A_NS.a, "buAutoNum");
+		const buBlip = firstChildNS(el, A_NS.a, "buBlip");
 		if (buChar) {
 			const c = buChar.getAttribute("char");
 			if (c) {
@@ -390,6 +394,18 @@ export function parseParaProps(
 				colorHex: bulletColorHex,
 				fontFamily: bulletFontFamily,
 			};
+		} else if (buBlip) {
+			const blip = firstChildNS(buBlip, A_NS.a, "blip");
+			const rId = blip ? blip.getAttributeNS(A_NS.r, "embed") : null;
+			if (rId) {
+				s.bullet = {
+					kind: "blip",
+					rId,
+					sizePct: bulletSizePct,
+					colorHex: bulletColorHex,
+					fontFamily: bulletFontFamily,
+				};
+			}
 		}
 	}
 	return s;

@@ -653,6 +653,50 @@ nowrap_tb.line.color.rgb = RGBColor(0xC0, 0x50, 0x4D)
 nowrap_tb.text_frame.text = "This line should not wrap even though it is long."
 _set_bodypr_attr(nowrap_tb, "wrap", "none")
 
+# Numbering-formats slide — exercises the extended formatAutoNum coverage
+# (circled, CJK, Korean, Thai, Hebrew) plus an image-bullet paragraph. Each
+# paragraph carries a different <a:buAutoNum type="..."/> so the renderer has
+# to run through several branches of the switch. The image-bullet paragraph
+# embeds the same PNG used by the "An image" slide.
+autonum_slide = prs.slides.add_slide(prs.slide_layouts[5])
+autonum_slide.shapes.title.text = "Numbering formats"
+num_tb = autonum_slide.shapes.add_textbox(Inches(1), Inches(1.5), Inches(8), Inches(5))
+num_tf = num_tb.text_frame
+num_tf.word_wrap = True
+
+_autonum_samples = [
+    ("arabicPeriod", "Arabic period"),
+    ("arabic1Minus", "Arabic minus"),
+    ("circleNumDbPlain", "Circled number"),
+    ("ea1ChsPeriod", "Chinese Simplified"),
+    ("ea1JpnKorPlain", "Korean hangul"),
+    ("thaiNumPeriod", "Thai digits"),
+    ("hebrew2Minus", "Hebrew letter"),
+]
+for i, (autonum_type, label) in enumerate(_autonum_samples):
+    para = num_tf.paragraphs[0] if i == 0 else num_tf.add_paragraph()
+    para.text = label
+    pPr = para._p.get_or_add_pPr()
+    buAutoNum = etree.SubElement(pPr, qn("a:buAutoNum"))
+    buAutoNum.set("type", autonum_type)
+
+# Image-bullet paragraph — python-pptx has no "bullet image" helper, so
+# add a temporary picture to register the image part + rel, steal its rId,
+# remove the picture, then reference the rId from <a:buBlip>.
+_tmp_bullet_pic = autonum_slide.shapes.add_picture(
+    str(image_path), 0, 0, Inches(1), Inches(1)
+)
+_tmp_blip = _tmp_bullet_pic._element.find(".//" + qn("a:blip"))
+_bullet_rid = _tmp_blip.get(qn("r:embed"))
+_tmp_bullet_pic._element.getparent().remove(_tmp_bullet_pic._element)
+
+blip_para = num_tf.add_paragraph()
+blip_para.text = "Image bullet"
+blip_pPr = blip_para._p.get_or_add_pPr()
+buBlip = etree.SubElement(blip_pPr, qn("a:buBlip"))
+buBlip_blip = etree.SubElement(buBlip, qn("a:blip"))
+buBlip_blip.set(qn("r:embed"), _bullet_rid)
+
 # Slide with a chart — exercises the chart graphicFrame fallback path.
 # python-pptx doesn't emit a cached preview image, so rendering is expected
 # to show the "[Chart]" placeholder; the point of the fixture is to
