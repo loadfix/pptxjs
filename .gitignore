@@ -15,5 +15,9 @@ obj/
 .screenshots/
 .playwright-mcp/
 
+# Playwright default output directory
+test-results/
+playwright-report/
+
 # Private test fixtures not intended for publication.
 tests/render-test/sample/
