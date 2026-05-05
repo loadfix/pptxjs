@@ -254,6 +254,16 @@ export interface Shape {
 	// Consumed by the renderer so it can skip sldNum/ftr/hdr/dt placeholders
 	// when the slide's <p:hf> flag disables them.
 	phType: string | null;
+	// Raw <p:ph idx="..."> value as a string, defaulted to "0" when the
+	// attribute is missing but a <p:ph> is present. Null when there is no
+	// <p:ph>. Surfaced as a data-attribute so hosts can distinguish e.g.
+	// multiple body placeholders on a single layout.
+	phIdx: string | null;
+	// <p:cNvSpPr txBox="1"/> — the authoring app marked this shape as a
+	// user-drawn text box rather than a preset auto-shape. Used by the
+	// renderer to emit data-shape-type="textbox" for selector-based
+	// introspection in the conformance harness.
+	isTextBox: boolean;
 	// Parsed <a:bodyPr> from <p:txBody>. Null when the shape has no text body
 	// or the element was absent. Drives text-frame insets, vertical anchor,
 	// wrap, column count, writing-mode, and autofit scaling.
@@ -320,6 +330,13 @@ export interface PicShape {
 	biLevelPermille: number | null;
 	// <a:duotone> with two color children — resolved hex colors.
 	duotone: [string, string] | null;
+	// Normalized placeholder type from <p:ph type="..."> on a pic placeholder
+	// (commonly "pic"). Null when the picture isn't a placeholder. Surfaced
+	// as data-placeholder-type for conformance-harness DOM introspection.
+	phType: string | null;
+	// Raw <p:ph idx="..."> value (defaulted to "0" when the attribute is
+	// missing). Null when there is no <p:ph>.
+	phIdx: string | null;
 }
 
 export interface SrcRect {
@@ -988,6 +1005,13 @@ function parsePic(pic: Element, ctx: SlideParseContext): PicShape | null {
 	const nv = parseNonVisualProps(nvPicPr);
 	const alt = nv.descr ?? nv.name ?? "";
 	const hyperlinkRId = hyperlinkFromCNvPr(nvPicPr);
+	// Placeholder hookup for pictures — a <p:pic> can sit in a layout/slide
+	// <p:ph type="pic"> frame. We surface type/idx purely for data-attribute
+	// introspection; sizing inheritance is not yet wired up here.
+	const picNvPr = nvPicPr && firstChildNS(nvPicPr, A_NS.p, "nvPr");
+	const picPh = picNvPr && firstChildNS(picNvPr, A_NS.p, "ph");
+	const picPhType = picPh ? normalizePhType(picPh.getAttribute("type")) : null;
+	const picPhIdx = picPh ? (picPh.getAttribute("idx") ?? "0") : null;
 
 	if (!frame && !src) return null;
 	return {
@@ -1013,6 +1037,8 @@ function parsePic(pic: Element, ctx: SlideParseContext): PicShape | null {
 		grayscale,
 		biLevelPermille,
 		duotone,
+		phType: picPhType,
+		phIdx: picPhIdx,
 	};
 }
 
@@ -1029,6 +1055,11 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 	const phType = ph ? normalizePhType(ph.getAttribute("type")) : null;
 	const phIdx = ph?.getAttribute("idx") ?? "0";
 	const phKey = phType ? `${phType}:${phIdx}` : null;
+	// <p:cNvSpPr txBox="1"/> — authoring app marks this as a user-drawn text
+	// box. Only meaningful on <p:sp> (not connectors), but nvSpPr falls back
+	// to nvCxnSpPr above, so guard the cNvSpPr lookup accordingly.
+	const cNvSpPr = nvSpPr ? firstChildNS(nvSpPr, A_NS.p, "cNvSpPr") : null;
+	const isTextBox = cNvSpPr?.getAttribute("txBox") === "1";
 
 	if (!frame && phKey) {
 		const layoutInfo = ctx.layout.byKey.get(phKey) ?? ctx.layout.byType.get(phType!);
@@ -1094,6 +1125,8 @@ function parseShape(sp: Element, ctx: SlideParseContext): Shape | null {
 		flipH: frame?.flipH ?? false,
 		flipV: frame?.flipV ?? false,
 		phType,
+		phIdx: ph ? phIdx : null,
+		isTextBox,
 		bodyPr,
 	};
 }

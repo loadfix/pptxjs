@@ -239,6 +239,9 @@ export function renderTable(
 	Object.assign(wrap.style, positionStyle(t.x, t.y, t.cx, t.cy));
 	Object.assign(wrap.style, transformStyle(t.rotation60k, t.flipH, t.flipV));
 
+	// Stable data-* hook for the conformance harness / DOM introspection.
+	wrap.setAttribute("data-kind", "table");
+
 	const table = document.createElement("table");
 	Object.assign(table.style, {
 		width: "100%",

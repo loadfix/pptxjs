@@ -20,6 +20,13 @@ export function renderPic(pic: PicShape, cls: string, hyperlinkUrls: Map<string,
 	Object.assign(wrap.style, positionStyle(pic.x, pic.y, pic.cx, pic.cy));
 	Object.assign(wrap.style, transformStyle(pic.rotation60k, pic.flipH, pic.flipV));
 
+	// Stable data-* hooks for the conformance harness / DOM introspection.
+	wrap.setAttribute("data-kind", "pic");
+	if (pic.phType) {
+		wrap.setAttribute("data-placeholder-type", pic.phType);
+		if (pic.phIdx != null) wrap.setAttribute("data-placeholder-idx", pic.phIdx);
+	}
+
 	if (!pic.src) return wrap;
 
 	const opacity = pic.alphaPermille != null ? pic.alphaPermille / PERMILLE : null;
